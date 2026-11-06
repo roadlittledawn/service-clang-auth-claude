@@ -1,0 +1,12 @@
+:root { color-scheme: light dark; --fg: #1d1d1f; --bg: #f5f5f7; --card: #fff; --muted: #6e6e73; --accent: #2a5bd7; --err: #b3261e; }
+@media (prefers-color-scheme: dark) { :root { --fg: #f5f5f7; --bg: #111; --card: #1c1c1e; --muted: #a1a1a6; --accent: #7ea2ff; --err: #ff8a80; } }
+* { box-sizing: border-box; }
+body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: var(--bg); color: var(--fg); font: 16px/1.5 system-ui, -apple-system, sans-serif; padding: 16px; }
+.card { width: 100%; max-width: 380px; background: var(--card); padding: 28px; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,.12); }
+h1 { font-size: 1.4rem; margin: 0 0 16px; }
+label { display: block; margin: 12px 0; font-size: .9rem; color: var(--muted); }
+input { display: block; width: 100%; margin-top: 4px; padding: 10px; font: inherit; color: var(--fg); background: transparent; border: 1px solid var(--muted); border-radius: 8px; }
+button, .button { display: inline-block; margin-top: 12px; padding: 10px 16px; font: inherit; color: #fff; background: var(--accent); border: 0; border-radius: 8px; cursor: pointer; text-decoration: none; }
+button.secondary { background: transparent; color: var(--accent); border: 1px solid var(--accent); }
+.error { color: var(--err); }
+a { color: var(--accent); }
