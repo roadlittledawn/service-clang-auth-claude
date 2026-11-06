@@ -209,7 +209,9 @@ pub async fn resolve_ssm(vars: &mut HashMap<String, String>) -> Result<()> {
         .await
         .context("fetching parameters from SSM")?;
     for bad in out.invalid_parameters() {
-        let optional = wanted.iter().any(|(var, param)| param == bad && SSM_OPTIONAL.contains(&var.as_str()));
+        let optional = wanted
+            .iter()
+            .any(|(var, param)| param == bad && SSM_OPTIONAL.contains(&var.as_str()));
         if !optional {
             bail!("SSM parameter not found: {bad}");
         }
