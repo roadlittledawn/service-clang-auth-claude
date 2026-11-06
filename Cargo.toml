@@ -1,0 +1,51 @@
+[workspace]
+resolver = "2"
+members = ["crates/core", "crates/service", "crates/cli"]
+
+[workspace.package]
+edition = "2021"
+version = "0.1.0"
+license = "MIT"
+
+[workspace.dependencies]
+anyhow = "1"
+axum = "0.8"
+axum-extra = { version = "0.10", features = ["cookie"] }
+argon2 = "0.5"
+base64 = "0.22"
+bson = { version = "2", features = ["chrono-0_4"] }
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
+clap = { version = "4", features = ["derive", "env"] }
+futures = "0.3"
+hex = "0.4"
+jsonwebtoken = "9"
+lambda_http = "0.14"
+mongodb = "3"
+p256 = { version = "0.13", features = ["ecdsa", "pem", "pkcs8", "jwk"] }
+rand = "0.8"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+subtle = "2"
+thiserror = "2"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal", "time"] }
+tower = { version = "0.5", features = ["util"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
+url = "2"
+
+# Argon2 and P-256 are painfully slow without optimisation; keep debug builds and tests usable.
+[profile.dev.package.argon2]
+opt-level = 3
+[profile.dev.package.blake2]
+opt-level = 3
+[profile.dev.package.p256]
+opt-level = 3
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"

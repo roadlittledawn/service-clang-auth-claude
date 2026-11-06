@@ -1,0 +1,31 @@
+[package]
+name = "clang-auth-core"
+description = "Domain logic for clang-auth: models, persistence, password hashing, token signing. No HTTP."
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[lib]
+name = "clang_auth_core"
+
+[dependencies]
+argon2 = { workspace = true }
+base64 = { workspace = true }
+bson = { workspace = true }
+chrono = { workspace = true }
+futures = { workspace = true }
+hex = { workspace = true }
+jsonwebtoken = { workspace = true }
+mongodb = { workspace = true }
+p256 = { workspace = true }
+rand = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+subtle = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+url = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }

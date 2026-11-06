@@ -1,0 +1,8 @@
+/target
+.env
+.dev-keys/
+.aws-sam/
+node_modules/
+examples/node-app/dist/
+*.pem
+!infra/**/*.pem.example
