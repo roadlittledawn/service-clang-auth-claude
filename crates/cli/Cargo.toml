@@ -1,0 +1,28 @@
+[package]
+name = "clang-auth-cli"
+description = "Admin CLI for clang-auth. Talks to the admin HTTP API only."
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "clang-auth"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+clap = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+toml = "0.8"
+dotenvy = "0.15"
+url = { workspace = true }
+
+[dev-dependencies]
+clang-auth-core = { path = "../core" }
+service = { path = "../service" }
+mongodb = { workspace = true }
+axum = { workspace = true }
+tokio = { workspace = true }
