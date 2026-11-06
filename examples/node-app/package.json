@@ -1,0 +1,22 @@
+{
+  "name": "clang-auth-example-node-app",
+  "private": true,
+  "type": "module",
+  "description": "Minimal app that consumes clang-auth: verifies the ca_access JWT locally with jose.",
+  "engines": { "node": ">=22.18" },
+  "scripts": {
+    "start": "node src/server.ts",
+    "dev": "node --watch src/server.ts",
+    "test": "node --test test/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@hono/node-server": "1.19.6",
+    "hono": "4.10.4",
+    "jose": "6.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "24.9.2",
+    "typescript": "5.9.3"
+  }
+}
