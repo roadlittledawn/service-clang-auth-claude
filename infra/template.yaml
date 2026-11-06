@@ -1,0 +1,122 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  clang-auth: central authentication for apps on subdomains of one root
+  domain. Lambda (arm64) behind an API Gateway HTTP API with a custom domain.
+  Cost guardrails (SPEC §11): stage throttling 5 rps / burst 10, reserved
+  concurrency 5, 10 s timeout, 14-day log retention, and no fixed-cost
+  resources (no VPC, NAT, CloudFront, WAF, Secrets Manager, KMS CMKs, X-Ray,
+  provisioned concurrency, dashboards or REST APIs).
+
+Parameters:
+  DomainName:
+    Type: String
+    Description: Auth host, e.g. auth.example.com
+  CertificateArn:
+    Type: String
+    Description: ACM certificate (same region as the stack) covering DomainName
+  HostedZoneId:
+    Type: AWS::Route53::HostedZone::Id
+    Description: Route 53 hosted zone for the root domain; an alias record for DomainName is created in it
+  CookieDomain:
+    Type: String
+    Description: Parent domain for the access-token cookie, e.g. .example.com
+  SsmPrefix:
+    Type: String
+    Default: /clang-auth
+    AllowedPattern: "^/[A-Za-z0-9_./-]+$"
+    Description: >
+      SSM path holding the SecureString parameters mongodb-uri,
+      admin-api-key-hash and signing-key, and (only during a key rotation)
+      the optional String parameter signing-keys-retired
+  MongoDbName:
+    Type: String
+    Default: clang_auth
+  LogLevel:
+    Type: String
+    Default: info
+    AllowedValues: [error, warn, info, debug]
+
+Resources:
+  # Explicit log group so logs expire. Without it Lambda creates one that
+  # keeps logs forever.
+  ServiceLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${AWS::StackName}-service
+      RetentionInDays: 14
+
+  HttpApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      # Stage-wide throttle: the hard bound on the bill under abuse
+      # (~13M requests/month worst case, see docs/operations.md).
+      DefaultRouteSettings:
+        ThrottlingRateLimit: 5
+        ThrottlingBurstLimit: 10
+      # Only the custom domain should be used; cookies are scoped to it.
+      DisableExecuteApiEndpoint: true
+      Domain:
+        DomainName: !Ref DomainName
+        CertificateArn: !Ref CertificateArn
+        EndpointConfiguration: REGIONAL
+        Route53:
+          HostedZoneId: !Ref HostedZoneId
+
+  ServiceFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: rust-cargolambda
+      BuildProperties:
+        Binary: clang-auth-service
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-service
+      CodeUri: ..
+      Handler: bootstrap
+      Runtime: provided.al2023
+      Architectures: [arm64]
+      MemorySize: 512
+      Timeout: 10
+      ReservedConcurrentExecutions: 5
+      LoggingConfig:
+        LogGroup: !Ref ServiceLogGroup
+        LogFormat: Text
+      Environment:
+        Variables:
+          AUTH_BASE_URL: !Sub https://${DomainName}
+          COOKIE_DOMAIN: !Ref CookieDomain
+          COOKIE_SECURE: "true"
+          ALLOW_INSECURE_ORIGINS: "false"
+          ALLOW_TOKEN_MINT: "false"
+          MONGODB_DB: !Ref MongoDbName
+          LOG_LEVEL: !Ref LogLevel
+          # Secrets are fetched from SSM once per cold start, never stored
+          # in the template or in Lambda configuration.
+          MONGODB_URI_SSM_PARAM: !Sub ${SsmPrefix}/mongodb-uri
+          ADMIN_API_KEY_HASH_SSM_PARAM: !Sub ${SsmPrefix}/admin-api-key-hash
+          SIGNING_KEY_SSM_PARAM: !Sub ${SsmPrefix}/signing-key
+          # Optional; absent except during a signing-key rotation.
+          SIGNING_KEYS_RETIRED_SSM_PARAM: !Sub ${SsmPrefix}/signing-keys-retired
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action: ssm:GetParameters
+              Resource: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${SsmPrefix}/*
+      Events:
+        All:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+
+Outputs:
+  AuthUrl:
+    Description: Auth service base URL
+    Value: !Sub https://${DomainName}
+  FunctionName:
+    Description: Lambda function name (used by the kill switch)
+    Value: !Ref ServiceFunction
+  HttpApiId:
+    Description: HTTP API ID (used by the kill switch)
+    Value: !Ref HttpApi
+  LogGroup:
+    Value: !Ref ServiceLogGroup

@@ -1,0 +1,23 @@
+# `sam build && sam deploy` from the repository root.
+# Fill in parameter_overrides before the first deploy (see docs/operations.md).
+version = 0.1
+
+[default.global.parameters]
+stack_name = "clang-auth"
+region = "us-east-1"
+
+[default.build.parameters]
+template_file = "infra/template.yaml"
+# rust-cargolambda is a SAM "beta" build method.
+beta_features = true
+
+[default.deploy.parameters]
+capabilities = "CAPABILITY_IAM"
+resolve_s3 = true
+confirm_changeset = true
+parameter_overrides = [
+  "DomainName=auth.example.com",
+  "CertificateArn=arn:aws:acm:us-east-1:123456789012:certificate/REPLACE-ME",
+  "HostedZoneId=Z0000000000000000000",
+  "CookieDomain=.example.com",
+]
