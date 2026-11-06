@@ -24,7 +24,13 @@ if [ "$snippet" != "$(tail -n +4 examples/node-app/src/auth.ts)" ]; then
 fi
 echo "integration-guide middleware matches examples/node-app/src/auth.ts"
 
-curl -sf "$AUTH_BASE_URL/health" >/dev/null || { echo "service not running at $AUTH_BASE_URL" >&2; exit 1; }
+# JWKS, not just /health, so another program on the same port isn't mistaken for clang-auth.
+for _ in $(seq 1 60); do
+  curl -sf -m 2 "$AUTH_BASE_URL/.well-known/jwks.json" 2>/dev/null | grep -q '"kty":"EC"' && break
+  sleep 0.5
+done
+curl -sf -m 2 "$AUTH_BASE_URL/.well-known/jwks.json" | grep -q '"kty":"EC"' \
+  || { echo "clang-auth is not answering at $AUTH_BASE_URL (not running, or another program holds the port)" >&2; exit 1; }
 
 # Clean leftovers from a previous run so the examples are repeatable.
 clang-auth user delete alice@example.com --yes >/dev/null 2>&1 || true

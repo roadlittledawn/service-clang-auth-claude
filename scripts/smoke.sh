@@ -16,6 +16,15 @@ pass() { printf '  ok  %s\n' "$1"; }
 fail() { printf 'FAIL  %s\n' "$1"; exit 1; }
 
 echo "smoke test: $AUTH and $APP"
+# Wait until *clang-auth* answers (over IPv4, and over whichever address
+# curl picks by default, as a browser would). Checking the
+# JWKS (not just /health) catches another program squatting on the port.
+is_clang_auth() { curl -sS -m 2 "$@" "$AUTH/.well-known/jwks.json" 2>/dev/null | grep -q '"kty":"EC"'; }
+for _ in $(seq 1 60); do
+  is_clang_auth -4 && is_clang_auth && break
+  sleep 0.5
+done
+is_clang_auth || fail "clang-auth is not answering at $AUTH (another program on the port? try: lsof -nP -iTCP:${AUTH##*:} -sTCP:LISTEN)"
 [ "$(c "$AUTH/health")" = '{"status":"ok"}' ] && pass "auth service healthy" || fail "auth /health"
 
 # 1. Visiting the app while signed out bounces to the auth login page.
