@@ -6,3 +6,6 @@ node_modules/
 examples/node-app/dist/
 *.pem
 !infra/**/*.pem.example
+
+# Real deploy settings (account ID, certificate ARN). Deploy with: sam deploy --config-file samconfig.local.toml
+samconfig.local.toml
