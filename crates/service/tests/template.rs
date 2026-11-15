@@ -44,10 +44,14 @@ fn http_api_is_throttled() {
     let s = &apis[0]["Properties"]["DefaultRouteSettings"];
     assert_eq!(s["ThrottlingRateLimit"].as_f64(), Some(5.0));
     assert_eq!(s["ThrottlingBurstLimit"].as_u64(), Some(10));
-    assert!(
-        apis[0]["Properties"]["Domain"]["DomainName"].is_tagged()
-            || apis[0]["Properties"]["Domain"]["DomainName"].is_string()
+    assert_eq!(
+        apis[0]["Properties"]["DisableExecuteApiEndpoint"].as_bool(),
+        Some(true)
     );
+    let domains = of_type(&t, "AWS::ApiGatewayV2::DomainName");
+    assert_eq!(domains.len(), 1);
+    assert!(domains[0]["Properties"]["DomainName"].is_tagged());
+    assert_eq!(of_type(&t, "AWS::ApiGatewayV2::ApiMapping").len(), 1);
 }
 
 trait Tagged {
