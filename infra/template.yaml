@@ -16,8 +16,12 @@ Parameters:
     Type: String
     Description: ACM certificate (same region as the stack) covering DomainName
   HostedZoneId:
-    Type: AWS::Route53::HostedZone::Id
-    Description: Route 53 hosted zone for the root domain; an alias record for DomainName is created in it
+    Type: String
+    Default: ""
+    Description: >
+      Route 53 hosted zone for the root domain. If set, an alias record for
+      DomainName is created in it. Leave empty when DNS is hosted elsewhere
+      (e.g. Netlify DNS) and create a CNAME to the DnsTarget output yourself.
   CookieDomain:
     Type: String
     Description: Parent domain for the access-token cookie, e.g. .example.com
@@ -36,6 +40,9 @@ Parameters:
     Type: String
     Default: info
     AllowedValues: [error, warn, info, debug]
+
+Conditions:
+  CreateDnsRecord: !Not [!Equals [!Ref HostedZoneId, ""]]
 
 Resources:
   # Explicit log group so logs expire. Without it Lambda creates one that
@@ -56,12 +63,36 @@ Resources:
         ThrottlingBurstLimit: 10
       # Only the custom domain should be used; cookies are scoped to it.
       DisableExecuteApiEndpoint: true
-      Domain:
-        DomainName: !Ref DomainName
-        CertificateArn: !Ref CertificateArn
-        EndpointConfiguration: REGIONAL
-        Route53:
-          HostedZoneId: !Ref HostedZoneId
+
+  # Custom domain declared explicitly (not via HttpApi.Domain) so the DNS
+  # record is optional and the regional target can be output for external DNS.
+  AuthDomain:
+    Type: AWS::ApiGatewayV2::DomainName
+    Properties:
+      DomainName: !Ref DomainName
+      DomainNameConfigurations:
+        - CertificateArn: !Ref CertificateArn
+          EndpointType: REGIONAL
+          SecurityPolicy: TLS_1_2
+
+  AuthApiMapping:
+    Type: AWS::ApiGatewayV2::ApiMapping
+    DependsOn: HttpApiApiGatewayDefaultStage
+    Properties:
+      ApiId: !Ref HttpApi
+      DomainName: !Ref AuthDomain
+      Stage: $default
+
+  AuthDnsRecord:
+    Type: AWS::Route53::RecordSet
+    Condition: CreateDnsRecord
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Ref DomainName
+      Type: A
+      AliasTarget:
+        DNSName: !GetAtt AuthDomain.RegionalDomainName
+        HostedZoneId: !GetAtt AuthDomain.RegionalHostedZoneId
 
   ServiceFunction:
     Type: AWS::Serverless::Function
@@ -112,6 +143,9 @@ Outputs:
   AuthUrl:
     Description: Auth service base URL
     Value: !Sub https://${DomainName}
+  DnsTarget:
+    Description: CNAME target for DomainName when DNS is hosted outside Route 53
+    Value: !GetAtt AuthDomain.RegionalDomainName
   FunctionName:
     Description: Lambda function name (used by the kill switch)
     Value: !Ref ServiceFunction

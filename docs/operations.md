@@ -23,11 +23,11 @@ How to deploy clang-auth to AWS from scratch, keep the bill near zero, rotate ke
 |---|---|
 | Lambda function `clang-auth-service` (arm64, `provided.al2023`, 512 MB, 10 s timeout, reserved concurrency 5) | The Rust service. The same binary runs locally. |
 | API Gateway **HTTP API** with stage throttling 5 rps / burst 10 | Public HTTPS entrypoint. |
-| Custom domain `auth.example.com` + Route 53 alias record | Cookies are scoped to your domain, so the service must be reachable on it. The default `execute-api` URL is disabled. |
+| Custom domain `auth.example.com` (API Gateway domain name + API mapping), plus a Route 53 alias record if you pass `HostedZoneId` | Cookies are scoped to your domain, so the service must be reachable on it. The default `execute-api` URL is disabled. With DNS hosted elsewhere, you create a `CNAME` to the stack's `DnsTarget` output. |
 | `AWS::Logs::LogGroup` `/aws/lambda/clang-auth-service`, 14-day retention | Logs that expire. |
 | IAM role allowing `ssm:GetParameters` on `/clang-auth/*` only | Reading secrets (and retired public keys) at cold start. |
 
-Created outside the stack, by you, once: a MongoDB Atlas M0 cluster, three SSM SecureString parameters (plus an optional `signing-keys-retired` parameter during key rotations), an ACM certificate, and (if you don't already have one) a Route 53 hosted zone.
+Created outside the stack, by you, once: a MongoDB Atlas M0 cluster, three SSM SecureString parameters (plus an optional `signing-keys-retired` parameter during key rotations), an ACM certificate, and the DNS records for validation and (with external DNS) for `auth.`.
 
 ## 2. First-time setup
 
@@ -35,7 +35,7 @@ Created outside the stack, by you, once: a MongoDB Atlas M0 cluster, three SSM S
 
 - An AWS account and the [AWS CLI v2](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html), signed in (`aws sts get-caller-identity` works).
 - [AWS SAM CLI](https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/install-sam-cli.html), [cargo-lambda](https://www.cargo-lambda.info/guide/installation.html) and Zig (cargo-lambda uses Zig to cross-compile for arm64). On macOS: `brew install aws-sam-cli cargo-lambda/tap/cargo-lambda` (installs Zig too).
-- Your domain's DNS hosted in **Route 53** (a hosted zone costs $0.50/month).
+- Access to your domain's DNS. **Route 53** (a hosted zone costs $0.50/month) lets the stack create the `auth.` record for you; any other DNS host (for example Netlify DNS) works with two manual `CNAME` records. Check which one is live with `dig +short NS example.com`: a registrar can be Amazon while the nameservers point elsewhere.
 - Pick a region and use it for everything below. This guide uses `us-east-1`:
 
   ```sh
@@ -60,7 +60,14 @@ aws acm describe-certificate --certificate-arn <arn> \
   --query 'Certificate.DomainValidationOptions[0].ResourceRecord'
 ```
 
-Create the CNAME record it shows in your hosted zone. In the console, *Create records in Route 53* does it in one click. Wait until `aws acm describe-certificate … --query Certificate.Status` says `ISSUED` (usually a few minutes). Note the hosted zone ID:
+Create the CNAME record it shows wherever your DNS is hosted. In Route 53 the console's *Create records in Route 53* does it in one click. For Netlify DNS:
+
+```sh
+netlify api getDnsZones      # note the zone id for example.com
+netlify api createDnsRecord --data '{"zone_id":"<zone id>","body":{"type":"CNAME","hostname":"<Name from above, without the trailing dot>","value":"<Value>","ttl":300}}'
+```
+
+Wait until `aws acm describe-certificate … --query Certificate.Status` says `ISSUED` (usually a few minutes). If your DNS is in Route 53, note the hosted zone ID:
 
 ```sh
 aws route53 list-hosted-zones-by-name --dns-name example.com --query 'HostedZones[0].Id'
@@ -104,25 +111,27 @@ To hash a key you already have: `cargo run -q -p service -- hash-admin-key '<key
 
 ### 2.5 Deploy
 
-Edit `parameter_overrides` in `samconfig.toml`:
+Copy `samconfig.toml` to `samconfig.local.toml` (gitignored, so your account ID and certificate ARN stay out of the repo) and edit its `parameter_overrides`:
 
 ```toml
 parameter_overrides = [
   "DomainName=auth.example.com",
   "CertificateArn=arn:aws:acm:us-east-1:123456789012:certificate/…",
-  "HostedZoneId=Z0123456789ABC",
+  "HostedZoneId=Z0123456789ABC",   # omit if DNS is not in Route 53
   "CookieDomain=.example.com",
 ]
 ```
 
-Also set `region` in `samconfig.toml` to your region, then:
+Also set `region` to your region, then:
 
 ```sh
 sam build      # cross-compiles the Rust binary for arm64 (first build takes a few minutes)
-sam deploy     # shows a change set; confirm with "y"
+sam deploy --config-file samconfig.local.toml   # shows a change set; confirm with "y"
 ```
 
-`sam deploy` creates an S3 bucket for artifacts (`resolve_s3 = true`, a few cents per year) and then the stack. The stack also creates the DNS alias record for `auth.example.com`. When it finishes:
+`sam deploy` creates an S3 bucket for artifacts (`resolve_s3 = true`, a few cents per year) and then the stack. The deploying identity needs IAM permissions to create the function's role (`iam:CreateRole`, `iam:PutRolePolicy`, …); a narrowly scoped CLI user will fail with `AccessDenied` on `ServiceFunctionRole`.
+
+With `HostedZoneId` set, the stack also creates the DNS alias record for `auth.example.com`. Otherwise, create a `CNAME` from `auth.example.com` to the `DnsTarget` output (`d-….execute-api.<region>.amazonaws.com`) at your DNS host. When it resolves:
 
 ```sh
 curl https://auth.example.com/health                  # {"status":"ok"}
@@ -215,7 +224,7 @@ aws apigatewayv2 update-stage --api-id "$API_ID" --stage-name '$default' \
   --default-route-settings ThrottlingRateLimit=0,ThrottlingBurstLimit=0
 ```
 
-To restore service, run `sam deploy` (which re-applies the template's values), or:
+To restore service, run `sam deploy --config-file samconfig.local.toml` (which re-applies the template's values), or:
 
 ```sh
 aws lambda put-function-concurrency --function-name clang-auth-service --reserved-concurrent-executions 5

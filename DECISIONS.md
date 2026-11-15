@@ -85,5 +85,5 @@ Choices the spec left open, and the few places where the implementation goes bey
 
 ## Infrastructure
 
-- **D37.** The HTTP API's default `execute-api` endpoint is disabled (`DisableExecuteApiEndpoint: true`), so the service is only reachable on the custom domain its cookies are scoped to. The stack creates the Route 53 alias record. `HostedZoneId` and `CertificateArn` are required parameters, as §11 allows.
+- **D37.** The HTTP API's default `execute-api` endpoint is disabled (`DisableExecuteApiEndpoint: true`), so the service is only reachable on the custom domain its cookies are scoped to. `CertificateArn` is required. `HostedZoneId` is optional (amended 2026-11-15): when set, the stack creates the Route 53 alias record; when empty, DNS is hosted elsewhere and the operator creates a `CNAME` to the `DnsTarget` output. To make that possible the custom domain and API mapping are declared as explicit `AWS::ApiGatewayV2::DomainName` / `ApiMapping` resources instead of `HttpApi.Domain`. Prompted by the first real deploy: `clintonlangosch.com` is registered at Amazon but served by Netlify DNS.
 - **D38.** `samconfig.toml` sits at the repo root and points at `infra/template.yaml`. It sets `beta_features = true` because SAM still marks the `rust-cargolambda` build method as beta.

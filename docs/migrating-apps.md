@@ -24,7 +24,11 @@ Contents:
 Do this once, before the first app.
 
 1. **Choose the root domain.** Pick one you'll keep for years: every migrated app's URL depends on it, and moving again means repeating this whole process. A short personal domain works well. This guide uses `example.com` as the root. Avoid using a domain that also hosts things you don't control (see [§7](#7-security-rules-for-a-shared-domain)).
-2. **Host its DNS in Route 53.** The SAM stack creates the `auth.` record and the TLS custom domain there ($0.50/month for the hosted zone). Existing records for other services can move too; Route 53 can hold any record type. If the domain is registered elsewhere, create the hosted zone and point the registrar's nameservers at the four Route 53 nameservers it lists.
+2. **Know where its DNS is hosted.** Check with `dig +short NS example.com`; the registrar doesn't tell you. Either works:
+   - **Route 53:** the SAM stack creates the `auth.` record for you ($0.50/month for the hosted zone).
+   - **Elsewhere (for example Netlify DNS):** keep it there and add two `CNAME`s by hand, one for certificate validation and one for `auth.` ([operations.md §2.3 and §2.5](operations.md#23-tls-certificate-acm)). If your apps are on Netlify, staying on Netlify DNS also makes each app's subdomain a one-click custom domain.
+
+   Use one DNS host as the source of truth for all subdomains.
 3. **Decide the naming convention** now, so URLs stay predictable:
    - One subdomain per app, named after its clang-auth slug: `recipes.example.com` ↔ slug `recipes`.
    - `auth.example.com` is reserved for clang-auth.
@@ -80,7 +84,7 @@ grep -rn --exclude-dir={node_modules,.git,dist,.next,target} 'old-domain\.exampl
 ### Step 2: Add the subdomain to the app's host
 
 1. In the app's hosting dashboard, add `recipes.example.com` as a custom domain **alongside** the old domain, not instead of it.
-2. Create the DNS record the host asks for in Route 53. That's usually a `CNAME` to a host-specific target (see the table), or an `A`/`AAAA` record for your own server.
+2. Create the DNS record the host asks for at your DNS host. That's usually a `CNAME` to a host-specific target (see the table), or an `A`/`AAAA` record for your own server.
 3. Wait for TLS. Netlify, Vercel, Render, Fly and Amplify issue the certificate automatically once DNS resolves. For other AWS options, request an ACM certificate first (DNS validation, as in [operations.md §2.3](operations.md#23-tls-certificate-acm)).
 
 A Lambda function URL can't take a custom domain on its own; put it behind CloudFront or API Gateway.
@@ -97,6 +101,8 @@ A Lambda function URL can't take a custom domain on its own; put it behind Cloud
 | AWS API Gateway | Custom domain name + API mapping, plus an ACM certificate in the API's region | Route 53 alias `A`/`AAAA` to the custom domain's target |
 | AWS ALB / ECS / EC2 behind a load balancer | ACM certificate on the HTTPS listener | Route 53 alias `A`/`AAAA` to the load balancer |
 | Own server / VPS (including a bare EC2 instance) | Your reverse proxy (Caddy, nginx) | `A`/`AAAA` to the server's IP; Caddy obtains TLS automatically |
+
+On Netlify DNS with a Netlify-hosted app, adding the custom domain creates the record automatically. Otherwise:
 
 ```sh
 # Example: a CNAME in Route 53 (use the target your host shows)

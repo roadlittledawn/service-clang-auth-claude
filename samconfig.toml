@@ -1,5 +1,7 @@
 # `sam build && sam deploy` from the repository root.
 # Fill in parameter_overrides before the first deploy (see docs/operations.md).
+# Keep real values out of git: copy this to samconfig.local.toml (gitignored) and
+# deploy with `sam deploy --config-file samconfig.local.toml`.
 version = 0.1
 
 [default.global.parameters]
@@ -18,6 +20,7 @@ confirm_changeset = true
 parameter_overrides = [
   "DomainName=auth.example.com",
   "CertificateArn=arn:aws:acm:us-east-1:123456789012:certificate/REPLACE-ME",
+  # Only when DNS is in Route 53; omit for external DNS (e.g. Netlify) and CNAME to the DnsTarget output.
   "HostedZoneId=Z0000000000000000000",
   "CookieDomain=.example.com",
 ]
