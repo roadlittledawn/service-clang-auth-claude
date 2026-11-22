@@ -1,8 +1,6 @@
 // clang-auth verification middleware for Hono (docs/integration-guide.md).
-// Verifies the access token locally against the auth service's JWKS: no
-// network call per request (jose caches the keys). Browsers send the token in
-// the `ca_access` cookie; scripts and local MCP servers send
-// `Authorization: Bearer <token>` (exchanged from an API key at /api/token).
+// Verifies the access token (`ca_access` cookie, or `Authorization: Bearer`
+// from an API-key exchange) locally against the JWKS: no network call per request.
 import type { MiddlewareHandler } from "hono";
 import { getCookie } from "hono/cookie";
 import { createRemoteJWKSet, jwtVerify, type JWTPayload } from "jose";

@@ -4,7 +4,7 @@ How to add clang-auth sign-in to an app. You'll register the app, add about 30 l
 
 **Before you start:** your app must be served from a subdomain of the auth service's domain (for example `recipes.example.com` when the auth service is `auth.example.com`). If it lives on its own domain, start with [migrating-apps.md](migrating-apps.md). New to terms like JWT or `SameSite`? The [glossary in how-it-works.md](how-it-works.md#1-concepts-glossary) explains them.
 
-Contents: [How it works](#how-it-works-in-five-steps) · [1. Register](#1-register-your-app) · [2. Configure](#2-configuration-to-expose) · [3. Middleware](#3-verification-middleware) · [4. Refresh](#4-keeping-the-user-signed-in-refresh) · [5. Logout](#5-logout) · [6. Test without the service](#6-testing-your-app-without-the-auth-service) · [7. Test against a local service](#7-testing-against-a-local-auth-service) · [Troubleshooting](#troubleshooting)
+Contents: [How it works](#how-it-works-in-five-steps) · [1. Register](#1-register-your-app) · [2. Configure](#2-configuration-to-expose) · [3. Middleware](#3-verification-middleware) · [4. Refresh](#4-keeping-the-user-signed-in-refresh) · [5. Logout](#5-logout) · [6. Test without the service](#6-testing-your-app-without-the-auth-service) · [7. Test against a local service](#7-testing-against-a-local-auth-service) · [8. API keys](#8-api-keys-for-scripts-and-local-mcp-servers) · [Troubleshooting](#troubleshooting)
 
 ## How it works in five steps
 
@@ -37,7 +37,7 @@ Locally these are `http://auth.localtest.me:4000`, `demo`, and the default JWKS 
 
 ## 3. Verification middleware
 
-This is the complete middleware used by the example app ([`examples/node-app/src/auth.ts`](../examples/node-app/src/auth.ts)), for [Hono](https://hono.dev) with [`jose`](https://github.com/panva/jose). The logic carries over to Express or any other framework: read the cookie, `jwtVerify`, check `apps[slug]`.
+This is the complete middleware used by the example app ([`examples/node-app/src/auth.ts`](../examples/node-app/src/auth.ts)), for [Hono](https://hono.dev) with [`jose`](https://github.com/panva/jose). The logic carries over to Express or any other framework: read the token (the `Authorization: Bearer` header, else the cookie), `jwtVerify`, check `apps[slug]`.
 
 ```ts
 import type { MiddlewareHandler } from "hono";
@@ -56,28 +56,46 @@ export interface Claims extends JWTPayload {
   email: string;
   name: string | null;
   apps: Record<string, string[]>;
+  /** `["api_key"]` when the token was exchanged from an API key. */
+  amr?: string[];
 }
 
 export type AuthEnv = { Variables: { user: Claims; roles: string[] } };
 
 export function requireAuth(cfg: AuthConfig): MiddlewareHandler<AuthEnv> {
   const jwks = createRemoteJWKSet(new URL(cfg.jwksUrl ?? `${cfg.authBaseUrl}/.well-known/jwks.json`));
-  return async (c, next) => {
-    const token = getCookie(c, "ca_access");
-    let claims: Claims | undefined;
-    if (token) {
-      try {
-        // Checks the ES256 signature (key chosen by `kid`), `iss` and `exp`.
-        const { payload } = await jwtVerify<Claims>(token, jwks, {
-          issuer: cfg.issuer ?? cfg.authBaseUrl,
-          algorithms: ["ES256"],
-          clockTolerance: 30,
-        });
-        claims = payload;
-      } catch {
-        // Expired, forged or signed by an unknown key: treat as signed out.
-      }
+  const verify = async (token: string): Promise<Claims | undefined> => {
+    try {
+      // Checks the ES256 signature (key chosen by `kid`), `iss` and `exp`.
+      const { payload } = await jwtVerify<Claims>(token, jwks, {
+        issuer: cfg.issuer ?? cfg.authBaseUrl,
+        algorithms: ["ES256"],
+        clockTolerance: 30,
+      });
+      return payload;
+    } catch {
+      // Expired, forged or signed by an unknown key: treat as signed out.
+      return undefined;
     }
+  };
+  return async (c, next) => {
+    // Bearer first. A Bearer request is never redirected to the login page:
+    // it gets a 401 so the caller can exchange its API key again.
+    const bearer = c.req.header("authorization")?.match(/^Bearer\s+(.+)$/i)?.[1];
+    if (bearer) {
+      const claims = await verify(bearer.trim());
+      if (!claims) {
+        c.header("WWW-Authenticate", 'Bearer error="invalid_token"');
+        return c.json({ error: "invalid_token" }, 401);
+      }
+      const roles = claims.apps?.[cfg.appSlug];
+      if (!roles) return c.json({ error: "no_access" }, 403);
+      c.set("user", claims);
+      c.set("roles", roles);
+      return next();
+    }
+    const token = getCookie(c, "ca_access");
+    const claims = token ? await verify(token) : undefined;
     if (!claims) {
       const login = new URL("/login", cfg.authBaseUrl);
       login.searchParams.set("redirect_uri", c.req.url);
@@ -105,6 +123,7 @@ What it checks, and why each check matters:
 - **`iss`.** The token was issued by *your* auth service, not some other service that happens to use JWTs.
 - **`exp`.** Tokens live 15 minutes. `clockTolerance: 30` allows for small clock differences between machines.
 - **`apps[slug]`.** A valid token for a user who has no grant for *your* app is still a "no". Return `403` rather than redirecting, because redirecting would loop: the user is signed in, they just aren't allowed.
+- **Bearer before cookie, and no redirect for Bearer.** Scripts and local MCP servers send `Authorization: Bearer <token>` ([§8](#8-api-keys-for-scripts-and-local-mcp-servers)). A bad Bearer token gets `401` JSON, so the caller knows to exchange its key again; redirecting a script to an HTML login page helps no one. A bad Bearer header doesn't fall back to the cookie.
 
 `createRemoteJWKSet` fetches the JWKS once and caches it. When it sees an unknown `kid` (after a key rotation) it re-fetches automatically.
 
@@ -221,6 +240,56 @@ The public keys your middleware will fetch:
 curl -s http://auth.localtest.me:4000/.well-known/jwks.json | head -c 120; echo
 ```
 
+## 8. API keys for scripts and local MCP servers
+
+A local MCP server (or any script) can't sign in with a browser. Instead, a user creates an **API key** for one app on the auth service, and the script trades it for a normal access token.
+
+```text
+1. User (signed in) → https://auth.example.com/keys → creates a key for "recipes" → ca_key_…  (shown once)
+2. Script → POST https://auth.example.com/api/token   Authorization: Bearer ca_key_…
+          ← {"token": "<JWT>", "token_type": "Bearer", "expires_in": 900}
+3. Script → your app   Authorization: Bearer <JWT>
+4. Your app verifies it with the same middleware as a browser request (§3)
+```
+
+**What your app needs:** only Bearer support in the middleware, which the §3 middleware already has. No key table, no shared secret, no call to the auth service.
+
+**What the token contains:** the same claims as a browser token, with three differences:
+
+- `apps` holds **only the key's app**. A leaked recipes key can't be used against any other app.
+- The roles are the ones the user ticked when creating the key, **limited to their current grant**. An admin can make a key that acts with no roles, which is the default. If the admin later demotes the user, the key is demoted too. Promoting the user never promotes a key beyond what it was created with.
+- `amr: ["api_key"]` marks it as non-interactive. Browser tokens have no `amr`. Use it if you want stricter rules for scripts than for people, for example no `DELETE`:
+
+  ```ts
+  if (c.get("user").amr?.includes("api_key") && c.req.method === "DELETE") return c.json({ error: "forbidden" }, 403);
+  ```
+
+**When it stops working.** The exchange checks everything every time: the key exists and hasn't expired, the user is active, and the user still has a grant for the app. Revoking the key, disabling the user or removing the grant takes effect at the next exchange, within 15 minutes (one access-token lifetime). All failures return the same `401 invalid_api_key`.
+
+**Linking to it from your app.** Send users to `https://auth.example.com/keys?app=<your-slug>` to show only your app's form.
+
+**The script side.** [`examples/node-app/src/api-key-client.ts`](../examples/node-app/src/api-key-client.ts) exchanges the key, caches the token until a minute before it expires (about one exchange per 15 minutes), shares one exchange between concurrent calls, and on a `401` from your app exchanges again and retries once:
+
+```ts
+import { apiKeyClient } from "./api-key-client.ts";
+
+const auth = apiKeyClient({ authBaseUrl: process.env.AUTH_BASE_URL!, apiKey: process.env.CLANG_AUTH_API_KEY! });
+const res = await auth.fetch("https://recipes.example.com/api/recipes", {
+  method: "POST",
+  headers: { "content-type": "application/json" },
+  body: JSON.stringify({ title: "Pancakes" }),
+});
+```
+
+Store the key like any other secret: in the MCP server's environment (for example `.env`, git-ignored), never in the repo. `POST /api/token` sends no CORS headers, so a web page can't use a key from the browser; it's for servers and scripts only.
+
+By hand, with a key from `/keys`:
+
+```sh
+TOKEN=$(curl -s -X POST https://auth.example.com/api/token -H "Authorization: Bearer $CLANG_AUTH_API_KEY" | jq -r .token)
+curl -s https://recipes.example.com/api/whoami -H "Authorization: Bearer $TOKEN"
+```
+
 ## Troubleshooting
 
 **The cookie isn't sent to my app.**
@@ -237,6 +306,10 @@ curl -s http://auth.localtest.me:4000/.well-known/jwks.json | head -c 120; echo
 **Tokens are rejected with "exp" or "iat" errors even though they're fresh.** That's clock skew: your server's clock disagrees with the auth service's. Keep NTP enabled. The example middleware tolerates 30 seconds (`clockTolerance`).
 
 **Token rejected after a key rotation.** `createRemoteJWKSet` re-fetches when it sees a new `kid`, but a hand-rolled cache might not. Re-fetch the JWKS whenever a token's `kid` isn't in your cached copy.
+
+**A script gets `401 invalid_api_key` from `/api/token`.** The key was revoked or has expired, the user is disabled, or their grant for the key's app was removed. `clang-auth key list <email>` shows the user's keys and when each was last used.
+
+**A script gets redirected to `/login` instead of a `401`.** Your middleware isn't reading the `Authorization` header. See §3.
 
 **`localtest.me` problems.**
 - `*.localtest.me` is a public DNS name that resolves to `127.0.0.1` (and `::1`), so it needs working DNS. Offline, add `127.0.0.1 auth.localtest.me demo.localtest.me` to `/etc/hosts`.

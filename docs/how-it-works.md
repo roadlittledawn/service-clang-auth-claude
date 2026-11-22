@@ -306,6 +306,27 @@ sequenceDiagram
 
 Grants are read from the database each time a token is issued, so changes take effect on the next token, within 15 minutes. Visiting `auth…/login?redirect_uri=<app>` gets one immediately.
 
+
+### 3.8 A local MCP server using an API key
+
+The user creates a key for one app on `/keys` (signed in, with CSRF protection), choosing which of their roles it may use. Only `sha256(key)` is stored. The MCP server then:
+
+```mermaid
+sequenceDiagram
+    participant M as Local MCP server
+    participant Auth as auth.example.com
+    participant App as recipes.example.com
+    M->>Auth: POST /api/token, Authorization: Bearer ca_key_…
+    Note over Auth: sha256(key) → api_keys record<br/>not expired? user active? grant for recipes still there?
+    Auth-->>M: 200 {token, expires_in: 900}<br/>apps = {recipes: key roles ∩ grant roles}, amr = ["api_key"]
+    M->>App: POST /api/recipes, Authorization: Bearer <token>
+    Note over App: same JWKS verification as browser tokens
+    App-->>M: 201
+    Note over M: reuses the token for ~14 min, then exchanges again
+```
+
+Because every exchange re-reads the user and grant, revoking the key, disabling the user or removing the grant takes effect within one access-token lifetime, the same as for browser sessions.
+
 ---
 
 ## 4. Security decisions and threat model
@@ -376,6 +397,13 @@ The threats in scope: a phishing site, a malicious web page the user visits whil
 
 A single bearer key, compared in constant time against its stored SHA-256 hash, so timing doesn't leak how many characters matched. **Trade-off:** there is no per-admin identity or scoping. Anyone with the key is the admin. Rotation is in [operations.md §5](operations.md#5-rotating-the-admin-api-key).
 
+### API keys (issue #4)
+
+- **Prevents:** per-app key tables that drift from clang-auth. Before, an app's own API keys kept working after the user lost access, so offboarding meant deleting keys in every app.
+- **How:** a key is a 256-bit random bearer secret with a `ca_key_` prefix (easy to spot in a leak or a secret scanner), stored only as SHA-256, like sessions. It is bound to one user and one app. It can't sign anyone in. It can only be exchanged at `POST /api/token` for a 15-minute access token whose `apps` holds just that app, and whose roles are the key's roles intersected with the user's current grant, so a key never exceeds its user. All failures give the same `401`.
+- **Trust boundaries:** whoever holds the key can act as that user in that one app with those roles, until it is revoked or expires. It can't reach other apps, the user's session, or the admin API. `/api/token` sends no CORS headers and reads no cookies, so it is useless from a web page. The `/keys` forms accept only the auth host's own origin or the double-submit token, not registered app origins, so an app page can't create or revoke a user's keys.
+- **Trade-off:** like access tokens, an already-exchanged token can't be revoked early (up to 15 minutes). Users choose an expiry (30 days to never), and there's a cap of 10 keys per user per app.
+
 ### Logging hygiene
 
 Passwords, tokens, links, session IDs, and the admin key are never logged. Request logs omit query strings because the setup link's token is in one. A test captures all logs during the login and invite flows and fails if any secret appears (`crates/service/tests/logs.rs`).
@@ -393,7 +421,7 @@ What this service intentionally does **not** do ([SPEC §1 Non-Goals](../SPEC.md
 - **Not an OAuth 2.0 / OpenID Connect provider.** No authorization-code flow, client secrets, or discovery document. Only apps on subdomains of one domain can use it, because the whole design relies on a shared parent-domain cookie.
 - **No MFA, passkeys, or social login.** A password is the only factor.
 - **No email.** Invites and resets are links the admin delivers by hand. There's no "forgot password" button.
-- **No self-service sign-up or admin web UI.** Everything administrative goes through the CLI and one admin key.
+- **No self-service sign-up or admin web UI.** Everything administrative goes through the CLI and one admin key. (Users can create and revoke their own API keys at `/keys`.)
 - **No early revocation of access tokens.** Up to 15 minutes of access after logout, disable, or grant removal.
 - **No high availability beyond Lambda's defaults,** a single region, and a free-tier database with no backups.
 - **No per-admin accounts or audit trail of *who* made a change,** only that the admin key did.
@@ -414,8 +442,8 @@ At that point a managed identity provider (Cognito, Auth0, Clerk, or similar) or
 
 | File | Responsibility |
 |---|---|
-| `crates/core/src/model.rs` | MongoDB document types (`User`, `Grant`, `App`, `Session`, `Invite`, `LoginAttempts`); slug and email validation |
-| `crates/core/src/store.rs` | All database access: index creation, apps/users/grants CRUD, sessions (create, slide, revoke), invites (create, peek, atomic consume), rate-limit counters |
+| `crates/core/src/model.rs` | MongoDB document types (`User`, `Grant`, `App`, `Session`, `Invite`, `LoginAttempts`, `ApiKey`); slug and email validation |
+| `crates/core/src/store.rs` | All database access: index creation, apps/users/grants CRUD, sessions (create, slide, revoke), invites (create, peek, atomic consume), API keys (create, look up, revoke), rate-limit counters |
 | `crates/core/src/password.rs` | Argon2id hashing and verification, OWASP minimum parameters, password policy, dummy verification for timing |
 | `crates/core/src/secret.rs` | CSPRNG tokens, SHA-256 hashing, constant-time hash comparison (admin key) |
 | `crates/core/src/keys.rs` | ES256 key parsing and generation, `kid` thumbprints, JWKS document, JWT signing, retired keys |
@@ -425,7 +453,8 @@ At that point a managed identity provider (Cognito, Auth0, Clerk, or similar) or
 | `crates/service/src/state.rs` | Shared state (config, store, keys); building claims and issuing access tokens |
 | `crates/service/src/lib.rs` | The axum router: every route, admin auth layer, response middleware |
 | `crates/service/src/routes/browser.rs` | `/`, `/login`, `/logout`, `/setup`: the browser flows, rate limiting, redirect validation |
-| `crates/service/src/routes/api.rs` | `/api/session/refresh`, `/api/me`, CORS preflight, JWKS, `/health` |
+| `crates/service/src/routes/api.rs` | `/api/session/refresh`, `/api/me`, `/api/token` (API-key exchange), CORS preflight, JWKS, `/health` |
+| `crates/service/src/routes/keys.rs` | `/keys`: users create and revoke their own API keys; stricter CSRF (auth host only) |
 | `crates/service/src/routes/admin.rs` | `/admin/*`: bearer-key middleware and all admin endpoints, including the dev-only token mint |
 | `crates/service/src/security.rs` | CSRF origin/token check and CORS helpers |
 | `crates/service/src/cookies.rs` | Reading cookies and building every `Set-Cookie` (§5 attributes) |
@@ -437,5 +466,5 @@ At that point a managed identity provider (Cognito, Auth0, Clerk, or similar) or
 | `crates/cli/src/main.rs`, `client.rs`, `output.rs` | The `clang-auth` admin CLI: commands, HTTP client and config, human/JSON output |
 | `crates/service/tests/*.rs` | Acceptance tests against real MongoDB: auth flow, tokens, invites, admin, log hygiene, SAM template, repo secrets |
 | `crates/cli/tests/e2e.rs` | CLI end-to-end against a live local service |
-| `examples/node-app/` | Example consumer: `src/auth.ts` (middleware), tests with throwaway keys and against the live service |
+| `examples/node-app/` | Example consumer: `src/auth.ts` (middleware, cookie or Bearer), `src/api-key-client.ts` (API-key exchange for scripts), tests with throwaway keys and against the live service |
 | `infra/template.yaml`, `samconfig.toml` | AWS deployment with cost guardrails |
