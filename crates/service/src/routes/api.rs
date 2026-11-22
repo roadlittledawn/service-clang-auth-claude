@@ -127,7 +127,10 @@ pub async fn exchange_api_key(
         return Ok(reject("no_grant", Some(&key.public_id)));
     };
     let token = state.keys.sign(&claims)?;
-    state.store.touch_api_key(&key.id).await?;
+    // Bookkeeping only: a failed write must not fail a valid exchange.
+    if let Err(e) = state.store.touch_api_key(&key.id).await {
+        tracing::warn!(error = %e, key_id = %key.public_id, "could not record api key use");
+    }
     tracing::info!(
         event = "api_key_exchanged",
         key_id = %key.public_id,

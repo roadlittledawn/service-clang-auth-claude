@@ -229,6 +229,8 @@ pub struct NewKey<'a> {
     pub raw: &'a str,
     pub app_name: &'a str,
     pub token_url: &'a str,
+    /// Access-token lifetime, e.g. "15-minute".
+    pub ttl: &'a str,
 }
 
 fn roles_text(roles: &[String]) -> String {
@@ -254,13 +256,14 @@ pub fn keys(
             r#"<section><h2>New key for {app}</h2>
 <p>Copy it now. It won't be shown again.</p>
 <code class="secret">{raw}</code>
-<p class="muted">Exchange it for a 15-minute access token, then call the app with that token:</p>
+<p class="muted">Exchange it for a {ttl} access token, then call the app with that token:</p>
 <pre>curl -s -X POST {url} \
   -H "Authorization: Bearer $CLANG_AUTH_API_KEY"</pre>
 </section>"#,
             app = esc(k.app_name),
             raw = esc(k.raw),
             url = esc(k.token_url),
+            ttl = esc(k.ttl),
         )
     });
     let list = if keys.is_empty() {

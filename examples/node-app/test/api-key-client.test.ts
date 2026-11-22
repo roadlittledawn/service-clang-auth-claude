@@ -35,13 +35,34 @@ test("caches the token across calls and shares concurrent exchanges", async () =
   assert.deepEqual(calls.app, ["t1", "t1"]);
 });
 
-test("re-exchanges near expiry", async () => {
+test("a large skew is capped at half the lifetime, so tokens still cache", async () => {
   const { f, calls } = fake();
-  // A skew larger than the 900 s lifetime makes every token "about to expire".
   const c = apiKeyClient({ authBaseUrl: AUTH, apiKey: "ca_key_test", fetch: f, refreshSkewSeconds: 1000 });
   await c.token();
   await c.token();
+  assert.equal(calls.exchanges, 1);
+});
+
+test("re-exchanges once the token is near expiry", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: 0 });
+  const { f, calls } = fake();
+  const c = apiKeyClient({ authBaseUrl: AUTH, apiKey: "ca_key_test", fetch: f });
+  await c.token();
+  t.mock.timers.tick(839_000); // 900 s lifetime - 60 s skew - 1 s
+  await c.token();
+  assert.equal(calls.exchanges, 1);
+  t.mock.timers.tick(2_000);
+  await c.token();
   assert.equal(calls.exchanges, 2);
+});
+
+test("concurrent 401s share one re-exchange", async () => {
+  const { f, calls } = fake({ valid: (t) => t !== "t1" });
+  const c = apiKeyClient({ authBaseUrl: AUTH, apiKey: "ca_key_test", fetch: f });
+  await c.token();
+  const results = await Promise.all([1, 2, 3, 4].map(() => c.fetch("https://app.test/a")));
+  assert.deepEqual(results.map((r) => r.status), [200, 200, 200, 200]);
+  assert.equal(calls.exchanges, 2, "t1, then a single shared t2");
 });
 
 test("retries once with a fresh token when the app answers 401", async () => {

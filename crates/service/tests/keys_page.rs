@@ -273,3 +273,22 @@ async fn users_can_revoke_only_their_own_keys() {
         0
     );
 }
+
+#[tokio::test]
+async fn new_key_message_uses_the_configured_token_lifetime() {
+    let app = TestApp::with(|v| {
+        v.insert("ACCESS_TOKEN_TTL".into(), "5m".into());
+    })
+    .await;
+    app.user("me@example.com", &[("demo", &[])]).await;
+    let session = app.session_for("me@example.com").await;
+    let res = app
+        .send(own_form(
+            "/keys",
+            &session,
+            &[("app", "demo"), ("name", "k"), ("expires", "never")],
+        ))
+        .await;
+    assert_eq!(res.status, StatusCode::OK, "{}", res.body);
+    assert!(res.body.contains("a 5-minute access token"));
+}

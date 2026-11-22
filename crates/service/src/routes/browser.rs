@@ -99,7 +99,7 @@ pub async fn current_session(
         }))
 }
 
-fn seconds_until(t: chrono::DateTime<Utc>) -> i64 {
+pub fn seconds_until(t: chrono::DateTime<Utc>) -> i64 {
     (t - Utc::now()).num_seconds().max(0)
 }
 

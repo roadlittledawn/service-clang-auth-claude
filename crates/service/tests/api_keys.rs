@@ -403,3 +403,52 @@ async fn admin_can_list_and_revoke_keys_without_seeing_secrets() {
     assert_eq!(res.json()["revoked"], 1);
     assert_rejected(&app.send(exchange(&raw3)).await);
 }
+
+#[tokio::test]
+async fn public_ids_are_hex_so_they_never_look_like_cli_flags() {
+    let app = TestApp::new().await;
+    let user = app.user("me@example.com", &[("demo", &[])]).await;
+    for i in 0..10 {
+        let (_, k) = app
+            .store()
+            .create_api_key(user.id, "demo", &format!("k{i}"), &[], None)
+            .await
+            .unwrap();
+        assert_eq!(k.public_id.len(), 12);
+        assert!(k
+            .public_id
+            .bytes()
+            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()));
+    }
+}
+
+#[tokio::test]
+async fn concurrent_creates_cannot_exceed_the_per_app_limit() {
+    let app = TestApp::new().await;
+    let user = app.user("me@example.com", &[("demo", &[])]).await;
+    let store = app.store();
+    for i in 0..9 {
+        store
+            .create_api_key(user.id, "demo", &format!("k{i}"), &[], None)
+            .await
+            .unwrap();
+    }
+    let mut set = tokio::task::JoinSet::new();
+    for i in 0..8 {
+        let store = store.clone();
+        set.spawn(async move {
+            store
+                .create_api_key(user.id, "demo", &format!("race{i}"), &[], None)
+                .await
+                .is_ok()
+        });
+    }
+    let ok = set.join_all().await.into_iter().filter(|ok| *ok).count();
+    assert!(ok <= 1, "{ok} succeeded");
+    let n = store
+        .list_api_keys(Some(user.id), Some("demo"))
+        .await
+        .unwrap()
+        .len();
+    assert!(n <= 10, "{n} keys");
+}

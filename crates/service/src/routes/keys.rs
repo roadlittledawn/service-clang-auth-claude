@@ -15,7 +15,9 @@ use serde::Deserialize;
 
 use crate::{
     cookies, html,
-    routes::browser::{csrf_token, current_session, found, with_cookies, Current, PageResult},
+    routes::browser::{
+        csrf_token, current_session, found, seconds_until, with_cookies, Current, PageResult,
+    },
     security::{csrf_check, CsrfVerdict},
     state::AppState,
 };
@@ -50,20 +52,16 @@ async fn render(
     new_key: Option<(&str, &str)>,
     error: Option<&str>,
 ) -> PageResult {
-    let mut names = std::collections::HashMap::new();
-    for g in &cur.user.grants {
-        let name = match state.store.get_app(&g.app).await? {
-            Some(a) => a.name,
-            None => g.app.clone(),
-        };
-        names.insert(g.app.clone(), name);
-    }
+    // Two queries, run together: app names (a handful of apps) and the keys.
+    let (apps, keys) = tokio::join!(
+        state.store.list_apps(),
+        state.store.list_api_keys(Some(cur.user.id), None)
+    );
+    let names: std::collections::HashMap<String, String> =
+        apps?.into_iter().map(|a| (a.slug, a.name)).collect();
     let name_of = |slug: &str| names.get(slug).cloned().unwrap_or_else(|| slug.to_string());
 
-    let rows: Vec<html::KeyRow> = state
-        .store
-        .list_api_keys(Some(cur.user.id), None)
-        .await?
+    let rows: Vec<html::KeyRow> = keys?
         .into_iter()
         .map(|k| html::KeyRow {
             id: k.public_id,
@@ -89,17 +87,24 @@ async fn render(
         .collect();
 
     let token_url = format!("{}/api/token", state.config.base_url);
+    let secs = state.config.access_token_ttl.as_secs();
+    let ttl = if secs.is_multiple_of(60) {
+        format!("{}-minute", secs / 60)
+    } else {
+        format!("{secs}-second")
+    };
     let new_key = new_key.map(|(raw, app)| html::NewKey {
         raw,
         app_name: names.get(app).map_or(app, String::as_str),
         token_url: &token_url,
+        ttl: &ttl,
     });
     let (csrf, fresh) = csrf_token(headers);
     let res = html::keys(status, &cur.user.email, &rows, &apps, new_key, error, &csrf);
     let refresh = cookies::session(
         &state.config,
         &cur.token,
-        (cur.session.expires_at - Utc::now()).num_seconds().max(0),
+        seconds_until(cur.session.expires_at),
     );
     Ok(with_cookies(
         res,
@@ -174,12 +179,16 @@ pub async fn create(State(state): State<AppState>, headers: HeaderMap, body: Byt
     let Some(cur) = current_session(&state, &headers).await? else {
         return Ok(found("/login"));
     };
-    let expires_at = match f.expires.as_str() {
-        "never" => None,
-        "30" | "90" | "365" => {
-            Some(Utc::now() + Duration::days(f.expires.parse().expect("checked")))
-        }
-        _ => {
+    let days = match f.expires.as_str() {
+        "never" => Some(None),
+        "30" => Some(Some(30)),
+        "90" => Some(Some(90)),
+        "365" => Some(Some(365)),
+        _ => None,
+    };
+    let expires_at = match days {
+        Some(d) => d.map(|d| Utc::now() + Duration::days(d)),
+        None => {
             return render(
                 &state,
                 &headers,

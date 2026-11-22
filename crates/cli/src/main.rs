@@ -163,7 +163,12 @@ enum KeyCmd {
     Revoke {
         user: String,
         /// Key id, as shown by `key list`.
-        #[arg(required_unless_present = "all", conflicts_with = "all")]
+        // Ids are hex now, but allow a leading `-` for any older ids.
+        #[arg(
+            required_unless_present = "all",
+            conflicts_with = "all",
+            allow_hyphen_values = true
+        )]
         key_id: Option<String>,
         /// Revoke every key the user has (or every key for --app).
         #[arg(long)]

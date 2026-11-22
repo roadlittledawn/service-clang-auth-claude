@@ -268,7 +268,7 @@ A local MCP server (or any script) can't sign in with a browser. Instead, a user
 
 **Linking to it from your app.** Send users to `https://auth.example.com/keys?app=<your-slug>` to show only your app's form.
 
-**The script side.** [`examples/node-app/src/api-key-client.ts`](../examples/node-app/src/api-key-client.ts) exchanges the key, caches the token until a minute before it expires (about one exchange per 15 minutes), shares one exchange between concurrent calls, and on a `401` from your app exchanges again and retries once:
+**The script side.** [`examples/node-app/src/api-key-client.ts`](../examples/node-app/src/api-key-client.ts) exchanges the key, caches the token until a minute before it expires (about one exchange per 15 minutes), shares one exchange between concurrent calls, and on a `401` from your app exchanges again and retries once (so send a body that can be sent twice, such as a string or JSON, not a stream):
 
 ```ts
 import { apiKeyClient } from "./api-key-client.ts";

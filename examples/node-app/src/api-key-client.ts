@@ -6,12 +6,13 @@
 //
 // The token is cached until shortly before it expires (tokens live 15
 // minutes), so the auth service sees about one request per 15 minutes. If the
-// app answers 401, the token is exchanged again once and the request retried.
+// app answers 401, the token is exchanged again once and the request retried,
+// so pass a body that can be sent twice (a string, JSON, FormData), not a stream.
 
 export interface ApiKeyClientConfig {
   authBaseUrl: string; // e.g. https://auth.example.com
   apiKey: string; // ca_key_…, created on <authBaseUrl>/keys
-  /** Re-exchange this many seconds before expiry. Default 60. */
+  /** Re-exchange this many seconds before expiry. Default 60, capped at half the token's lifetime. */
   refreshSkewSeconds?: number;
   fetch?: typeof fetch;
 }
@@ -37,7 +38,9 @@ export function apiKeyClient(cfg: ApiKeyClientConfig) {
     if (res.status === 401) throw new ApiKeyRejectedError();
     if (!res.ok) throw new Error(`clang-auth /api/token failed: ${res.status}`);
     const body = (await res.json()) as { token: string; expires_in: number };
-    cached = { token: body.token, refreshAt: Date.now() + body.expires_in * 1000 - skew };
+    const lifetime = body.expires_in * 1000;
+    // Never refresh earlier than halfway, so short lifetimes still cache.
+    cached = { token: body.token, refreshAt: Date.now() + lifetime - Math.min(skew, lifetime / 2) };
     return body.token;
   }
 
@@ -56,9 +59,12 @@ export function apiKeyClient(cfg: ApiKeyClientConfig) {
       headers.set("authorization", `Bearer ${t}`);
       return doFetch(input, { ...init, headers });
     };
-    const res = await send(await token());
+    const used = await token();
+    const res = await send(used);
     if (res.status !== 401) return res;
-    cached = undefined;
+    // Drop the token only if it's still the one that failed: when several
+    // requests get 401 at once, they then share a single re-exchange.
+    if (cached?.token === used) cached = undefined;
     return send(await token());
   }
 

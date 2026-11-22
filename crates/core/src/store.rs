@@ -16,7 +16,7 @@ use mongodb::{
 use crate::{
     duration::to_chrono,
     model::*,
-    secret::{new_token, random_token, sha256_hex},
+    secret::{new_token, sha256_hex},
     Error, Result,
 };
 
@@ -630,7 +630,7 @@ impl Store {
         let raw = format!("{API_KEY_PREFIX}{}", new_token());
         let key = ApiKey {
             id: sha256_hex(&raw),
-            public_id: random_token(9),
+            public_id: new_public_id(),
             user_id,
             app: app.into(),
             name: name.into(),
@@ -640,6 +640,18 @@ impl Store {
             expires_at,
         };
         self.api_keys.insert_one(&key).await?;
+        // The count above isn't atomic with the insert, so concurrent creates
+        // could all pass it. Recount and undo ours if it went over.
+        let after = self
+            .api_keys
+            .count_documents(doc! { "user_id": user_id, "app": app })
+            .await?;
+        if after > MAX_API_KEYS_PER_APP {
+            self.api_keys.delete_one(doc! { "_id": &key.id }).await?;
+            return Err(Error::Invalid(format!(
+                "at most {MAX_API_KEYS_PER_APP} keys per app; revoke one first"
+            )));
+        }
         Ok((raw, key))
     }
 
@@ -755,6 +767,14 @@ impl Store {
             Err(e) => Err(e.into()),
         }
     }
+}
+
+/// A key's public id: 12 lowercase hex characters (48 bits). Hex, not
+/// base64url, so it never starts with `-` and can't be mistaken for a CLI flag.
+fn new_public_id() -> String {
+    let mut buf = [0u8; 6];
+    rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut buf);
+    hex::encode(buf)
 }
 
 fn dedupe(v: Vec<String>) -> Vec<String> {
