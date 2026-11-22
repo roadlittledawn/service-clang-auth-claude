@@ -24,7 +24,7 @@ use tower::ServiceBuilder;
 
 use crate::{
     error::ApiError,
-    routes::{admin, api, browser},
+    routes::{admin, api, browser, keys},
     state::AppState,
 };
 
@@ -89,6 +89,8 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/me", get(api::me).options(api::preflight))
         .route("/api/token", post(api::exchange_api_key))
+        .route("/keys", get(keys::page).post(keys::create))
+        .route("/keys/revoke", post(keys::revoke))
         .route("/.well-known/jwks.json", get(api::jwks))
         .route("/health", get(api::health))
         .route("/static/style.css", get(browser::stylesheet))

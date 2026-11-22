@@ -45,7 +45,7 @@ impl IntoResponse for PageError {
     }
 }
 
-type PageResult = Result<Response, PageError>;
+pub type PageResult = Result<Response, PageError>;
 
 /// A validated redirect target and the app it belongs to.
 #[derive(Default)]
@@ -104,14 +104,14 @@ fn seconds_until(t: chrono::DateTime<Utc>) -> i64 {
 }
 
 /// Reuse the visitor's CSRF cookie or mint a new one.
-fn csrf_token(headers: &HeaderMap) -> (String, bool) {
+pub fn csrf_token(headers: &HeaderMap) -> (String, bool) {
     match cookies::get(headers, cookies::CSRF) {
         Some(t) if t.len() >= 32 => (t, false),
         _ => (random_token(32), true),
     }
 }
 
-fn with_cookies(mut res: Response, cookies: impl IntoIterator<Item = HeaderValue>) -> Response {
+pub fn with_cookies(mut res: Response, cookies: impl IntoIterator<Item = HeaderValue>) -> Response {
     for c in cookies {
         res.headers_mut().append(header::SET_COOKIE, c);
     }

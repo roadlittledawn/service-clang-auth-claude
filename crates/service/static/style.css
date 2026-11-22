@@ -10,3 +10,16 @@ button, .button { display: inline-block; margin-top: 12px; padding: 10px 16px; f
 button.secondary { background: transparent; color: var(--accent); border: 1px solid var(--accent); }
 .error { color: var(--err); }
 a { color: var(--accent); }
+.card.wide { max-width: 640px; }
+.wide section { border-top: 1px solid rgba(127,127,127,.3); margin-top: 20px; padding-top: 4px; }
+.wide h2 { font-size: 1.1rem; margin: 12px 0 4px; }
+.wide select { display: block; width: 100%; margin-top: 4px; padding: 10px; font: inherit; color: var(--fg); background: transparent; border: 1px solid var(--muted); border-radius: 8px; }
+.wide fieldset { border: 0; padding: 0; margin: 12px 0; font-size: .9rem; color: var(--muted); }
+.wide .check { display: inline-flex; align-items: center; gap: 6px; margin: 4px 16px 4px 0; color: var(--fg); }
+.wide .check input { display: inline; width: auto; margin: 0; }
+.wide ul.keys { list-style: none; padding: 0; }
+.wide ul.keys li { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 8px 0; border-bottom: 1px solid rgba(127,127,127,.2); }
+.wide ul.keys form button { margin-top: 0; padding: 6px 12px; }
+.muted { color: var(--muted); font-size: .85rem; }
+.secret { display: block; padding: 12px; border: 1px dashed var(--accent); border-radius: 8px; word-break: break-all; font: 14px/1.4 ui-monospace, monospace; user-select: all; }
+pre { overflow-x: auto; padding: 12px; border-radius: 8px; background: rgba(127,127,127,.12); font-size: 13px; }
