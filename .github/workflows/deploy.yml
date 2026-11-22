@@ -1,0 +1,98 @@
+# Deploy to production on every push to main (that is, every merged PR),
+# after the same checks as CI. One-time AWS and GitHub setup:
+# docs/operations.md §2.8.
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Never run two deploys at once, and never cancel one halfway.
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+
+  deploy:
+    name: sam deploy
+    needs: ci
+    runs-on: ubuntu-latest
+    # Holds the secrets below; can require approval (Settings → Environments).
+    # The AWS role only trusts jobs in this environment.
+    environment:
+      name: production
+      url: https://${{ vars.DOMAIN_NAME }}
+    permissions:
+      contents: read
+      id-token: write # GitHub OIDC → AWS, no long-lived keys
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      DOMAIN_NAME: ${{ vars.DOMAIN_NAME }}
+    steps:
+      # The repo is public, so its Actions logs are too: keep the account ID
+      # out of them (sam prints change set and bucket ARNs).
+      - run: echo "::add-mask::${{ secrets.AWS_ACCOUNT_ID }}"
+
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-unknown-linux-gnu
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: lambda-arm64
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # cargo-lambda (and the zig it brings) cross-compiles for arm64 Lambda.
+      - run: pip install cargo-lambda
+      - uses: aws-actions/setup-sam@v2
+        with:
+          use-installer: true
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: sam build
+        run: sam build --config-file samconfig.toml
+
+      - name: sam deploy
+        # Flags override samconfig.toml's placeholders; real values come from
+        # the production environment. CloudFormation makes the resource
+        # changes with the execution role, not with this job's role.
+        run: |
+          overrides=(
+            "DomainName=${DOMAIN_NAME}"
+            "CertificateArn=${{ secrets.CERTIFICATE_ARN }}"
+            "CookieDomain=${{ vars.COOKIE_DOMAIN }}"
+          )
+          if [ -n "${{ vars.HOSTED_ZONE_ID }}" ]; then
+            overrides+=("HostedZoneId=${{ vars.HOSTED_ZONE_ID }}")
+          fi
+          sam deploy --config-file samconfig.toml \
+            --region "$AWS_REGION" \
+            --role-arn "${{ secrets.AWS_CFN_EXEC_ROLE_ARN }}" \
+            --parameter-overrides "${overrides[@]}" \
+            --no-confirm-changeset --no-fail-on-empty-changeset
+
+      - name: Verify
+        run: |
+          base="https://${DOMAIN_NAME}"
+          for i in $(seq 1 30); do
+            curl -sf -m 5 "$base/health" | grep -q '"status":"ok"' && break
+            sleep 2
+          done
+          curl -sf -m 5 "$base/health" | grep -q '"status":"ok"'
+          curl -sf -m 5 "$base/.well-known/jwks.json" | grep -q '"kty":"EC"'
+          # No key → 401, proving the new build (not some other host) answers.
+          code=$(curl -s -o /dev/null -w '%{http_code}' -m 5 -X POST "$base/api/token")
+          test "$code" = 401
+          echo "health, JWKS and /api/token OK at $base"
