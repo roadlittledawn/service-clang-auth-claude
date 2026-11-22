@@ -83,6 +83,7 @@ pub fn router(state: AppState) -> Router {
             post(api::refresh).options(api::preflight),
         )
         .route("/api/me", get(api::me).options(api::preflight))
+        .route("/api/token", post(api::exchange_api_key))
         .route("/.well-known/jwks.json", get(api::jwks))
         .route("/health", get(api::health))
         .route("/static/style.css", get(browser::stylesheet))

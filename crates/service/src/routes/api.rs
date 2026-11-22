@@ -80,6 +80,73 @@ pub async fn me(State(state): State<AppState>, headers: HeaderMap) -> Result<Res
     ))
 }
 
+/// `POST /api/token`: exchange a per-user API key (`Authorization: Bearer
+/// ca_key_…`) for an access token scoped to the key's app (issue #4).
+///
+/// Server-to-server only: no cookies are read or set and no CORS headers are
+/// sent, so a browser page can't call it cross-origin. Every failure returns
+/// the same 401 so callers learn nothing about which check failed.
+pub async fn exchange_api_key(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    let presented = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .map(str::trim);
+    let reject = |reason: &'static str, public_id: Option<&str>| {
+        tracing::warn!(
+            event = "api_key_rejected",
+            reason,
+            key_id = public_id.unwrap_or("-")
+        );
+        let mut res = ApiError::new(
+            StatusCode::UNAUTHORIZED,
+            "invalid_api_key",
+            "Missing, invalid or revoked API key",
+        )
+        .into_response();
+        res.headers_mut()
+            .insert(header::WWW_AUTHENTICATE, HeaderValue::from_static("Bearer"));
+        res.headers_mut()
+            .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+        res
+    };
+    let Some(raw) = presented else {
+        return Ok(reject("missing", None));
+    };
+    let Some(key) = state.store.find_api_key(raw).await? else {
+        return Ok(reject("unknown_or_expired", None));
+    };
+    let user = match state.store.get_user(key.user_id).await? {
+        Some(u) if u.is_active() => u,
+        _ => return Ok(reject("user_inactive", Some(&key.public_id))),
+    };
+    let Some(claims) = state.claims_for_api_key(&user, &key) else {
+        return Ok(reject("no_grant", Some(&key.public_id)));
+    };
+    let token = state.keys.sign(&claims)?;
+    state.store.touch_api_key(&key.id).await?;
+    tracing::info!(
+        event = "api_key_exchanged",
+        key_id = %key.public_id,
+        user_id = %user.id,
+        app = %key.app,
+    );
+    let body = serde_json::json!({
+        "token": token,
+        "token_type": "Bearer",
+        "expires_in": claims.exp - claims.iat,
+    });
+    Ok((
+        StatusCode::OK,
+        [(header::CACHE_CONTROL, "no-store")],
+        Json(body),
+    )
+        .into_response())
+}
+
 /// CORS preflight for the `/api/*` and `/logout` endpoints. Unregistered
 /// origins get a bare 204 with no `Access-Control-Allow-*` headers, which the
 /// browser treats as a refusal.

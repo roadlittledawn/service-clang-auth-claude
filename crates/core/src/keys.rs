@@ -33,6 +33,11 @@ pub struct AccessClaims {
     pub iat: i64,
     pub exp: i64,
     pub jti: String,
+    /// How the user authenticated, when it wasn't a browser login. Tokens
+    /// exchanged from an API key carry `["api_key"]`. Omitted for browser
+    /// sessions so their claim set stays exactly §5.3.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub amr: Option<Vec<String>>,
 }
 
 /// A public key as published in JWKS.
@@ -234,6 +239,7 @@ mod tests {
             iat: 1_730_000_000,
             exp: 4_000_000_000,
             jti: "j".into(),
+            amr: None,
         }
     }
 
