@@ -57,3 +57,49 @@ test("seed user logs in and the demo app shows them", { skip }, async () => {
   assert.equal(page.status, 200);
   assert.match(await page.text(), /dev@localtest\.me/);
 });
+
+test("an API key created on /keys calls the demo app with a scoped Bearer token", { skip }, async () => {
+  const cookieOf = (res: Response, name: string) =>
+    res.headers.getSetCookie().find((c) => c.startsWith(`${name}=`))!.split(";")[0];
+  const login = await fetch(`${AUTH}/login`, {
+    method: "POST",
+    redirect: "manual",
+    headers: { origin: AUTH, "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ email: "dev@localtest.me", password: "devpassword123", redirect_uri: "" }),
+  });
+  assert.equal(login.status, 302);
+  const session = cookieOf(login, "ca_session");
+
+  // Create a key with no roles, as the /keys form would (Origin = auth host).
+  const create = await fetch(`${AUTH}/keys`, {
+    method: "POST",
+    headers: { origin: AUTH, cookie: session, "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ app: "demo", name: `live test ${Date.now()}`, expires: "30" }),
+  });
+  assert.equal(create.status, 200, await create.clone().text());
+  const html = await create.text();
+  const apiKey = html.match(/ca_key_[A-Za-z0-9_-]+/)![0];
+
+  const { apiKeyClient } = await import("../src/api-key-client.ts");
+  const client = apiKeyClient({ authBaseUrl: AUTH, apiKey });
+  const app = createApp({ authBaseUrl: AUTH, appSlug: "demo", appUrl: "http://demo.localtest.me:3000" });
+  const who = await (
+    await app.request("http://demo.localtest.me:3000/api/whoami", {
+      headers: { authorization: `Bearer ${await client.token()}` },
+    })
+  ).json();
+  assert.equal(who.user.email, "dev@localtest.me");
+  assert.deepEqual(who.roles, [], "dev is admin on demo, but the key was given no roles");
+  assert.deepEqual(who.user.amr, ["api_key"]);
+  assert.deepEqual(Object.keys(who.user.apps), ["demo"]);
+
+  // Clean up: revoke the key through the page.
+  const id = [...html.matchAll(/name="key_id" value="([^"]+)"/g)].map((m) => m[1])[0];
+  const revoke = await fetch(`${AUTH}/keys/revoke`, {
+    method: "POST",
+    redirect: "manual",
+    headers: { origin: AUTH, cookie: session, "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ key_id: id }),
+  });
+  assert.equal(revoke.status, 302);
+});

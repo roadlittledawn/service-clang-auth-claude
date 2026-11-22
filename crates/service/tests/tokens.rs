@@ -138,6 +138,7 @@ fn sample_claims() -> AccessClaims {
         iat: now,
         exp: now + 600,
         jti: "x".into(),
+        amr: None,
     }
 }
 

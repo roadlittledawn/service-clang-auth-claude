@@ -24,7 +24,7 @@ use tower::ServiceBuilder;
 
 use crate::{
     error::ApiError,
-    routes::{admin, api, browser},
+    routes::{admin, api, browser, keys},
     state::AppState,
 };
 
@@ -56,7 +56,12 @@ pub fn router(state: AppState) -> Router {
             "/admin/users/{id}/grants/{slug}",
             put(admin::set_grant).delete(admin::remove_grant),
         )
-        .route("/admin/users/{id}/sessions", delete(admin::revoke_sessions));
+        .route("/admin/users/{id}/sessions", delete(admin::revoke_sessions))
+        .route(
+            "/admin/users/{id}/keys",
+            get(admin::list_keys).delete(admin::revoke_keys),
+        )
+        .route("/admin/users/{id}/keys/{key_id}", delete(admin::revoke_key));
     if state.config.allow_token_mint {
         admin_routes = admin_routes.route("/admin/tokens", post(admin::mint_token));
     }
@@ -83,6 +88,9 @@ pub fn router(state: AppState) -> Router {
             post(api::refresh).options(api::preflight),
         )
         .route("/api/me", get(api::me).options(api::preflight))
+        .route("/api/token", post(api::exchange_api_key))
+        .route("/keys", get(keys::page).post(keys::create))
+        .route("/keys/revoke", post(keys::revoke))
         .route("/.well-known/jwks.json", get(api::jwks))
         .route("/health", get(api::health))
         .route("/static/style.css", get(browser::stylesheet))

@@ -175,6 +175,9 @@ All JSON errors use the shape `{"error": {"code": "snake_case_code", "message": 
 | POST | `/setup` | Set the password |
 | POST | `/api/session/refresh` | §4.3 (CORS) |
 | GET | `/api/me` | The current user's claims as JSON if the session is valid, otherwise `401` (CORS). For static SPAs with no backend. |
+| POST | `/api/token` | Exchange an API key (`Authorization: Bearer ca_key_…`) for an access token scoped to the key's app (§7 `api_keys`; issue #4). No cookies, no CORS. |
+| GET | `/keys` | Signed-in users' API keys (`?app=slug` limits the create form) |
+| POST | `/keys`, `/keys/revoke` | Create (raw key shown once) or revoke one's own key. CSRF: auth host origin or double-submit token only. |
 | GET | `/.well-known/jwks.json` | Public keys |
 | GET | `/health` | `200 {"status":"ok"}`. Checks database connectivity. |
 
@@ -201,6 +204,9 @@ Requires `Authorization: Bearer <ADMIN_API_KEY>`. The service stores only `sha25
 | PUT | `/admin/users/:id/grants/:slug` | Set roles `{roles: []}` (create or replace) |
 | DELETE | `/admin/users/:id/grants/:slug` | Remove a grant |
 | DELETE | `/admin/users/:id/sessions` | Revoke all of a user's sessions |
+| GET | `/admin/users/:id/keys` | List a user's API keys (optional `?app=slug`); never the key or its hash |
+| DELETE | `/admin/users/:id/keys` | Revoke all of a user's API keys (optional `?app=slug`) |
+| DELETE | `/admin/users/:id/keys/:key_id` | Revoke one API key |
 | POST | `/admin/tokens` | **Dev only.** Mint an access token `{user_id or email, ttl?}` for app testing. MUST return `404` unless `ALLOW_TOKEN_MINT=true`. |
 
 `:id` MAY also accept an email address, for convenience in the CLI.
@@ -250,6 +256,20 @@ purpose: "setup" | "reset"
 expires_at: Date         // TTL index
 used_at: Date | null
 ```
+
+**`api_keys`** (issue #4)
+```
+_id: string              // sha256(raw key) hex; raw key is "ca_key_" + 32 random bytes, base64url
+public_id: string        // unique, safe to show and log
+user_id: ObjectId        // indexed with app
+app: string              // slug
+name: string
+roles: [string]          // subset of the grant; tokens carry roles ∩ current grant roles
+created_at: Date
+last_used_at: Date | null  // written at most once a minute
+expires_at?: Date        // TTL index; absent = never
+```
+Exchanged tokens carry only `apps[app]` and `amr: ["api_key"]` (§5.3 claims otherwise unchanged; browser tokens have no `amr`). Deleting a user or app deletes its keys.
 
 **`login_attempts`** (for rate limiting)
 ```

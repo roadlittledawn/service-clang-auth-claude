@@ -28,6 +28,7 @@ pub struct Store {
     pub sessions: Collection<Session>,
     pub invites: Collection<Invite>,
     pub attempts: Collection<LoginAttempts>,
+    pub api_keys: Collection<ApiKey>,
 }
 
 fn now_bson() -> BsonDateTime {
@@ -83,6 +84,7 @@ impl Store {
             sessions: db.collection("sessions"),
             invites: db.collection("invites"),
             attempts: db.collection("login_attempts"),
+            api_keys: db.collection("api_keys"),
             db,
         }
     }
@@ -142,6 +144,23 @@ impl Store {
                     .options(ttl())
                     .build(),
             )
+            .await?;
+        self.api_keys
+            .create_indexes([
+                IndexModel::builder()
+                    .keys(doc! { "public_id": 1 })
+                    .options(IndexOptions::builder().unique(true).build())
+                    .build(),
+                IndexModel::builder()
+                    .keys(doc! { "user_id": 1, "app": 1 })
+                    .build(),
+                IndexModel::builder().keys(doc! { "app": 1 }).build(),
+                // Documents without `expires_at` are never removed.
+                IndexModel::builder()
+                    .keys(doc! { "expires_at": 1 })
+                    .options(ttl())
+                    .build(),
+            ])
             .await?;
         Ok(())
     }
@@ -229,6 +248,7 @@ impl Store {
                 doc! { "$pull": { "grants": { "app": slug } }, "$set": { "updated_at": now_bson() } },
             )
             .await?;
+        self.api_keys.delete_many(doc! { "app": slug }).await?;
         Ok(pulled.modified_count)
     }
 
@@ -359,6 +379,7 @@ impl Store {
         }
         self.sessions.delete_many(doc! { "user_id": id }).await?;
         self.invites.delete_many(doc! { "user_id": id }).await?;
+        self.api_keys.delete_many(doc! { "user_id": id }).await?;
         Ok(())
     }
 
@@ -563,6 +584,150 @@ impl Store {
             .await?)
     }
 
+    // ------------------------------------------------------------- api keys
+
+    /// Create an API key for `user_id` and `app`. Returns the raw key (shown
+    /// once) and the stored record. The user must exist and hold a grant for
+    /// `app`, and `roles` must be a subset of that grant's roles (often
+    /// empty); at most [`MAX_API_KEYS_PER_APP`] keys per user per app.
+    pub async fn create_api_key(
+        &self,
+        user_id: ObjectId,
+        app: &str,
+        name: &str,
+        roles: &[String],
+        expires_at: Option<Timestamp>,
+    ) -> Result<(String, ApiKey)> {
+        let name = name.trim();
+        if name.is_empty() || name.chars().count() > 64 {
+            return Err(Error::Invalid("key name must be 1 to 64 characters".into()));
+        }
+        if expires_at.is_some_and(|t| t <= Utc::now()) {
+            return Err(Error::Invalid("expiry must be in the future".into()));
+        }
+        let user = self
+            .get_user(user_id)
+            .await?
+            .ok_or(Error::NotFound("user"))?;
+        let Some(grant) = user.grant(app) else {
+            return Err(Error::Invalid(format!("user has no grant for app {app:?}")));
+        };
+        let roles = normalize_roles(roles)?;
+        if let Some(r) = roles.iter().find(|r| !grant.roles.contains(r)) {
+            return Err(Error::Invalid(format!(
+                "role {r:?} is not in the user's grant for {app:?}"
+            )));
+        }
+        let existing = self
+            .api_keys
+            .count_documents(doc! { "user_id": user_id, "app": app })
+            .await?;
+        if existing >= MAX_API_KEYS_PER_APP {
+            return Err(Error::Invalid(format!(
+                "at most {MAX_API_KEYS_PER_APP} keys per app; revoke one first"
+            )));
+        }
+        let raw = format!("{API_KEY_PREFIX}{}", new_token());
+        let key = ApiKey {
+            id: sha256_hex(&raw),
+            public_id: new_public_id(),
+            user_id,
+            app: app.into(),
+            name: name.into(),
+            roles,
+            created_at: Utc::now(),
+            last_used_at: None,
+            expires_at,
+        };
+        self.api_keys.insert_one(&key).await?;
+        // The count above isn't atomic with the insert, so concurrent creates
+        // could all pass it. Recount and undo ours if it went over.
+        let after = self
+            .api_keys
+            .count_documents(doc! { "user_id": user_id, "app": app })
+            .await?;
+        if after > MAX_API_KEYS_PER_APP {
+            self.api_keys.delete_one(doc! { "_id": &key.id }).await?;
+            return Err(Error::Invalid(format!(
+                "at most {MAX_API_KEYS_PER_APP} keys per app; revoke one first"
+            )));
+        }
+        Ok((raw, key))
+    }
+
+    /// Keys, newest first, optionally filtered by user and/or app.
+    pub async fn list_api_keys(
+        &self,
+        user_id: Option<ObjectId>,
+        app: Option<&str>,
+    ) -> Result<Vec<ApiKey>> {
+        let mut filter = doc! {};
+        if let Some(id) = user_id {
+            filter.insert("user_id", id);
+        }
+        if let Some(app) = app {
+            filter.insert("app", app);
+        }
+        Ok(self
+            .api_keys
+            .find(filter)
+            .sort(doc! { "created_at": -1 })
+            .await?
+            .try_collect()
+            .await?)
+    }
+
+    /// Look up a raw key. `None` if malformed, unknown or expired. Does not
+    /// check the user or grant; the caller does that.
+    pub async fn find_api_key(&self, raw: &str) -> Result<Option<ApiKey>> {
+        if !raw.starts_with(API_KEY_PREFIX) || raw.len() > 128 {
+            return Ok(None);
+        }
+        let key = self
+            .api_keys
+            .find_one(doc! { "_id": sha256_hex(raw) })
+            .await?;
+        // The TTL monitor only runs once a minute, so check expiry ourselves.
+        Ok(key.filter(|k| k.expires_at.is_none_or(|t| t > Utc::now())))
+    }
+
+    /// Record a use of the key, writing at most once a minute.
+    pub async fn touch_api_key(&self, id: &str) -> Result<()> {
+        let now = Utc::now();
+        let stale = BsonDateTime::from_chrono(now - chrono::Duration::seconds(60));
+        self.api_keys
+            .update_one(
+                doc! { "_id": id, "$or": [
+                    { "last_used_at": bson::Bson::Null },
+                    { "last_used_at": { "$lt": stale } },
+                ] },
+                doc! { "$set": { "last_used_at": BsonDateTime::from_chrono(now) } },
+            )
+            .await?;
+        Ok(())
+    }
+
+    /// Revoke one of `user_id`'s keys by its public id.
+    pub async fn revoke_api_key(&self, user_id: ObjectId, public_id: &str) -> Result<()> {
+        let res = self
+            .api_keys
+            .delete_one(doc! { "user_id": user_id, "public_id": public_id })
+            .await?;
+        if res.deleted_count == 0 {
+            return Err(Error::NotFound("api key"));
+        }
+        Ok(())
+    }
+
+    /// Revoke all of `user_id`'s keys, optionally only those for `app`.
+    pub async fn revoke_user_api_keys(&self, user_id: ObjectId, app: Option<&str>) -> Result<u64> {
+        let mut filter = doc! { "user_id": user_id };
+        if let Some(app) = app {
+            filter.insert("app", app);
+        }
+        Ok(self.api_keys.delete_many(filter).await?.deleted_count)
+    }
+
     // ------------------------------------------------------- rate limiting
 
     /// Number of recorded failures for `key` in the current window.
@@ -602,6 +767,14 @@ impl Store {
             Err(e) => Err(e.into()),
         }
     }
+}
+
+/// A key's public id: 12 lowercase hex characters (48 bits). Hex, not
+/// base64url, so it never starts with `-` and can't be mistaken for a CLI flag.
+fn new_public_id() -> String {
+    let mut buf = [0u8; 6];
+    rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut buf);
+    hex::encode(buf)
 }
 
 fn dedupe(v: Vec<String>) -> Vec<String> {

@@ -23,6 +23,13 @@ fn roles(v: &Value) -> String {
     }
 }
 
+/// The date part of an RFC 3339 timestamp, or "never".
+fn day(v: &Value) -> &str {
+    v.as_str()
+        .map(|t| t.get(..10).unwrap_or(t))
+        .unwrap_or("never")
+}
+
 fn grants_summary(u: &Value) -> String {
     let g: Vec<String> = u["grants"]
         .as_array()
@@ -161,6 +168,34 @@ impl Output {
         }
         // Just the token, so `$(clang-auth token mint ...)` works.
         println!("{}", s(&v["token"]));
+        Ok(())
+    }
+
+    pub fn keys(&self, v: &Value) -> Result<()> {
+        if self.json {
+            return self.print_json(v);
+        }
+        let keys = v.as_array().cloned().unwrap_or_default();
+        if keys.is_empty() {
+            println!("No API keys.");
+            return Ok(());
+        }
+        println!(
+            "{:<14} {:<16} {:<20} {:<20} {:<11} {:<11} EXPIRES",
+            "ID", "APP", "NAME", "ROLES", "CREATED", "LAST USED"
+        );
+        for k in keys {
+            println!(
+                "{:<14} {:<16} {:<20} {:<20} {:<11} {:<11} {}",
+                s(&k["id"]),
+                s(&k["app"]),
+                s(&k["name"]),
+                roles(&k["roles"]),
+                day(&k["created_at"]),
+                day(&k["last_used_at"]),
+                day(&k["expires_at"]),
+            );
+        }
         Ok(())
     }
 

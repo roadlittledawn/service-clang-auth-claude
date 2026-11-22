@@ -375,3 +375,79 @@ fn cli_reads_config_file() {
     assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "[]");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn api_keys_through_the_cli() {
+    let s = start_server(false);
+    ok(
+        &s,
+        &[
+            "app",
+            "create",
+            "cooking",
+            "--name",
+            "Cooking",
+            "--origin",
+            "http://cooking.localtest.me:5002",
+        ],
+    );
+    let o = ok(
+        &s,
+        &[
+            "--json",
+            "user",
+            "create",
+            "cook@example.com",
+            "--grant",
+            "cooking:admin,member",
+        ],
+    );
+    let user_id = o.json()["user"]["id"].as_str().unwrap().to_string();
+
+    // Users create keys on /keys; here we create them straight in the store.
+    let db = s.db.clone();
+    let public_ids: Vec<String> = tokio::runtime::Runtime::new().unwrap().block_on(async {
+        let uri =
+            std::env::var("MONGODB_URI").unwrap_or_else(|_| "mongodb://localhost:27017".into());
+        let store = clang_auth_core::store::Store::connect(&uri, &db)
+            .await
+            .unwrap();
+        let id = mongodb::bson::oid::ObjectId::parse_str(&user_id).unwrap();
+        let mut ids = vec![];
+        for (name, roles) in [("laptop", vec!["member".to_string()]), ("desktop", vec![])] {
+            let (_, k) = store
+                .create_api_key(id, "cooking", name, &roles, None)
+                .await
+                .unwrap();
+            ids.push(k.public_id);
+        }
+        ids
+    });
+
+    let o = ok(&s, &["key", "list", "cook@example.com"]);
+    assert!(o.stdout.contains("laptop") && o.stdout.contains("desktop"));
+    assert!(o.stdout.contains("member"));
+    let o = ok(
+        &s,
+        &[
+            "--json",
+            "key",
+            "list",
+            "cook@example.com",
+            "--app",
+            "cooking",
+        ],
+    );
+    assert_eq!(o.json().as_array().unwrap().len(), 2);
+
+    let o = ok(&s, &["key", "revoke", "cook@example.com", &public_ids[0]]);
+    assert!(o.stdout.contains("Revoked key"));
+    // --all without --yes and no terminal refuses.
+    assert!(!cli(&s, &["key", "revoke", "cook@example.com", "--all"]).ok);
+    let o = ok(&s, &["key", "revoke", "cook@example.com", "--all", "--yes"]);
+    assert!(o.stdout.contains("Revoked 1 key(s)"), "{}", o.stdout);
+    let o = ok(&s, &["key", "list", "cook@example.com"]);
+    assert!(o.stdout.contains("No API keys."));
+    // A key id and --all together is a usage error.
+    assert!(!cli(&s, &["key", "revoke", "cook@example.com", "abc", "--all"]).ok);
+}

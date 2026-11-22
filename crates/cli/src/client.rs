@@ -131,4 +131,22 @@ impl Client {
     pub async fn delete(&self, segments: &[&str]) -> Result<Value> {
         self.send(Method::DELETE, self.url(segments), None).await
     }
+
+    fn url_with_query(&self, segments: &[&str], query: &[(&str, &str)]) -> Url {
+        let mut url = self.url(segments);
+        if !query.is_empty() {
+            url.query_pairs_mut().extend_pairs(query);
+        }
+        url
+    }
+
+    pub async fn get_query(&self, segments: &[&str], query: &[(&str, &str)]) -> Result<Value> {
+        self.send(Method::GET, self.url_with_query(segments, query), None)
+            .await
+    }
+
+    pub async fn delete_query(&self, segments: &[&str], query: &[(&str, &str)]) -> Result<Value> {
+        self.send(Method::DELETE, self.url_with_query(segments, query), None)
+            .await
+    }
 }

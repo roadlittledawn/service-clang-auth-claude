@@ -133,6 +133,42 @@ pub struct LoginAttempts {
     pub expires_at: Timestamp,
 }
 
+/// A per-user API key for one app (issue #4). The holder exchanges it at
+/// `POST /api/token` for an access token scoped to `app`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ApiKey {
+    /// `sha256(key)` as hex. The raw key is shown once and never stored.
+    #[serde(rename = "_id")]
+    pub id: String,
+    /// Short random id, safe to show and log; used to list and revoke.
+    pub public_id: String,
+    pub user_id: ObjectId,
+    pub app: String,
+    pub name: String,
+    /// Roles the key may act with: a subset of the grant chosen at creation.
+    /// Exchanged tokens carry `roles ∩ current grant roles`, so a key never
+    /// exceeds its user, and demoting the user demotes the key.
+    #[serde(default)]
+    pub roles: Vec<String>,
+    #[serde(with = "bson_dt::required")]
+    pub created_at: Timestamp,
+    #[serde(with = "bson_dt::optional", default)]
+    pub last_used_at: Option<Timestamp>,
+    /// `None` = never expires. MongoDB's TTL monitor deletes expired keys.
+    #[serde(
+        with = "bson_dt::optional",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub expires_at: Option<Timestamp>,
+}
+
+/// Prefix on every raw API key, so leaked keys are easy to recognise.
+pub const API_KEY_PREFIX: &str = "ca_key_";
+
+/// Most keys one user may hold for one app.
+pub const MAX_API_KEYS_PER_APP: u64 = 10;
+
 /// Validate an app slug: `^[a-z0-9-]{2,32}$`.
 pub fn valid_slug(slug: &str) -> bool {
     (2..=32).contains(&slug.len())

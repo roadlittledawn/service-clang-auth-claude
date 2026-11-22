@@ -15,6 +15,7 @@
 | Give or change access | [`clang-auth grant set <email> <slug> --role <role>`](#grant-set-emailid-slug---role-role) |
 | Remove access to one app | [`clang-auth grant remove <email> <slug>`](#grant-remove-emailid-slug) |
 | Sign someone out everywhere | [`clang-auth session revoke <email>`](#session-revoke-emailid) |
+| See or revoke someone's API keys | [`clang-auth key list <email>`](#key-list-emailid---app-slug) · [`key revoke <email> <key-id>`](#key-revoke-emailid-key-id----all---app-slug---yes) |
 | Block or unblock someone | [`clang-auth user disable <email>`](#user-disable-emailid--user-enable-emailid) · `user enable <email>` |
 | Delete a user or app | [`clang-auth user delete <email> --yes`](#deleting-things) · `app delete <slug> --yes` |
 | Get a test token (dev only) | [`clang-auth token mint <email> [--ttl 1h]`](#token-mint-emailid---ttl-1h) |
@@ -238,6 +239,37 @@ clang-auth session revoke alice@example.com
 ```text
 Revoked 0 session(s) for alice@example.com
 ```
+
+## API keys
+
+Users create their own API keys on the auth service's `/keys` page (for scripts and local MCP servers, see [integration-guide.md §8](integration-guide.md#8-api-keys-for-scripts-and-local-mcp-servers)). Admins can't create keys, because the raw key is shown only to the user who made it. Admins can list and revoke them.
+
+### `key list <email|id> [--app <slug>]`
+
+```bash
+clang-auth key list alice@example.com
+```
+
+```text
+ID             APP              NAME                 ROLES                CREATED     LAST USED   EXPIRES
+1v79VUgfD9K2   recipes          laptop MCP           member               2026-11-22  2026-11-22  2027-11-22
+```
+
+Prints `No API keys.` when there are none. The listing never shows the key itself or its hash.
+
+### `key revoke <email|id> <key-id> | --all [--app <slug>] [--yes]`
+
+Revoke one key by the ID from `key list`, or all of a user's keys with `--all`, optionally only those for one app. `--all` asks for confirmation unless you pass `--yes`.
+
+```bash
+clang-auth key revoke alice@example.com --all --yes
+```
+
+```text
+Revoked 0 key(s) for alice@example.com
+```
+
+Revoking is immediate for the key, but a token already exchanged from it stays valid until it expires (at most 15 minutes). Disabling a user or removing their grant also stops their keys from working, without deleting them. Deleting the user or the app deletes them.
 
 ## Tokens (development only)
 

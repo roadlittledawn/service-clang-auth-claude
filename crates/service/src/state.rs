@@ -6,7 +6,7 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 use clang_auth_core::{
     keys::{AccessClaims, SigningKeys},
-    model::User,
+    model::{ApiKey, User},
     secret::random_token,
     store::Store,
 };
@@ -63,7 +63,26 @@ impl AppState {
             iat,
             exp: iat + ttl.as_secs() as i64,
             jti: random_token(16),
+            amr: None,
         }
+    }
+
+    /// Claims for a token exchanged from an API key: `apps` holds only the
+    /// key's app, so a leaked key can't reach any other app; its roles are
+    /// the key's roles that the user's grant still has; and `amr` marks it as
+    /// non-interactive. `None` if the user no longer has a grant for the app.
+    pub fn claims_for_api_key(&self, user: &User, key: &ApiKey) -> Option<AccessClaims> {
+        let grant = user.grant(&key.app)?;
+        let roles = grant
+            .roles
+            .iter()
+            .filter(|r| key.roles.contains(r))
+            .cloned()
+            .collect();
+        let mut claims = self.claims_for(user, self.config.access_token_ttl);
+        claims.apps = [(grant.app.clone(), roles)].into();
+        claims.amr = Some(vec!["api_key".into()]);
+        Some(claims)
     }
 
     /// Sign a fresh access token for `user` with the configured TTL.

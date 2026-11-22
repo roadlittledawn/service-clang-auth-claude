@@ -86,3 +86,40 @@ test("wrong issuer, unknown key or wrong signature is rejected", async () => {
 test("health is public", async () => {
   assert.equal((await get("/health")).status, 200);
 });
+
+const bearer = (path: string, jwt: string, cookieJwt?: string) =>
+  app.request(`http://demo.test${path}`, {
+    headers: { authorization: `Bearer ${jwt}`, ...(cookieJwt ? { cookie: `ca_access=${cookieJwt}` } : {}) },
+  });
+
+test("Bearer token (from an API key) is accepted and exposes amr", async () => {
+  const jwt = await new SignJWT({ email: "me@example.com", name: "Me", apps: { demo: [] }, amr: ["api_key"] })
+    .setProtectedHeader({ alg: "ES256", kid: "test-key" })
+    .setSubject("user-1")
+    .setIssuer(ISSUER)
+    .setIssuedAt()
+    .setExpirationTime("15m")
+    .sign(privateKey);
+  const res = await bearer("/api/whoami", jwt);
+  assert.equal(res.status, 200);
+  const who = await res.json();
+  assert.deepEqual(who.roles, []);
+  assert.deepEqual(who.user.amr, ["api_key"]);
+});
+
+test("bad Bearer token gets 401 JSON, never a login redirect", async () => {
+  for (const jwt of ["not.a.jwt", await token({ iss: "https://evil.test" }), await token({ exp: Math.floor(Date.now() / 1000) - 120 })]) {
+    const res = await bearer("/api/whoami", jwt);
+    assert.equal(res.status, 401);
+    assert.match(res.headers.get("www-authenticate") ?? "", /^Bearer/);
+    assert.deepEqual(await res.json(), { error: "invalid_token" });
+  }
+  // A bad Bearer header doesn't fall back to a valid cookie.
+  assert.equal((await bearer("/api/whoami", "not.a.jwt", await token())).status, 401);
+});
+
+test("Bearer token without a grant for this app gets 403", async () => {
+  const res = await bearer("/api/whoami", await token({ apps: { other: [] } }));
+  assert.equal(res.status, 403);
+  assert.deepEqual(await res.json(), { error: "no_access" });
+});
