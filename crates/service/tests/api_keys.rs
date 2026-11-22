@@ -301,3 +301,105 @@ async fn browser_tokens_are_unchanged() {
     assert_eq!(claims.amr, None);
     assert_eq!(claims.apps.len(), 2);
 }
+
+#[tokio::test]
+async fn admin_can_list_and_revoke_keys_without_seeing_secrets() {
+    let app = TestApp::new().await;
+    let user = app
+        .user("me@example.com", &[("demo", &["member"]), ("other", &[])])
+        .await;
+    let store = app.store();
+    let (raw1, k1) = store
+        .create_api_key(user.id, "demo", "laptop", &["member".into()], None)
+        .await
+        .unwrap();
+    let (raw2, _) = store
+        .create_api_key(user.id, "demo", "desktop", &[], None)
+        .await
+        .unwrap();
+    let (raw3, _) = store
+        .create_api_key(user.id, "other", "ci", &[], None)
+        .await
+        .unwrap();
+
+    // Admin key required.
+    let res = app
+        .send(Req::get(&format!("/admin/users/{}/keys", user.id.to_hex())))
+        .await;
+    assert_eq!(res.status, StatusCode::UNAUTHORIZED);
+
+    let res = app
+        .send(Req::get("/admin/users/me@example.com/keys").admin())
+        .await;
+    assert_eq!(res.status, StatusCode::OK, "{}", res.body);
+    let list = res.json();
+    assert_eq!(list.as_array().unwrap().len(), 3);
+    for secret in [&raw1, &raw2, &raw3, &k1.id] {
+        assert!(
+            !res.body.contains(secret.as_str()),
+            "no raw key or hash in listing"
+        );
+    }
+    let res = app
+        .send(Req::get("/admin/users/me@example.com/keys?app=demo").admin())
+        .await;
+    assert_eq!(res.json().as_array().unwrap().len(), 2);
+    let laptop = res
+        .json()
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|k| k["name"] == "laptop")
+        .cloned()
+        .unwrap();
+    assert_eq!(laptop["id"], k1.public_id);
+    assert_eq!(laptop["roles"], serde_json::json!(["member"]));
+
+    // Revoke one.
+    let res = app
+        .send(
+            Req::new(
+                axum::http::Method::DELETE,
+                &format!("/admin/users/me@example.com/keys/{}", k1.public_id),
+            )
+            .admin(),
+        )
+        .await;
+    assert_eq!(res.status, StatusCode::OK, "{}", res.body);
+    assert_rejected(&app.send(exchange(&raw1)).await);
+    let res = app
+        .send(
+            Req::new(
+                axum::http::Method::DELETE,
+                "/admin/users/me@example.com/keys/nope",
+            )
+            .admin(),
+        )
+        .await;
+    assert_eq!(res.status, StatusCode::NOT_FOUND);
+
+    // Revoke all for one app, then the rest.
+    let res = app
+        .send(
+            Req::new(
+                axum::http::Method::DELETE,
+                "/admin/users/me@example.com/keys?app=demo",
+            )
+            .admin(),
+        )
+        .await;
+    assert_eq!(res.json()["revoked"], 1);
+    assert_rejected(&app.send(exchange(&raw2)).await);
+    assert_eq!(app.send(exchange(&raw3)).await.status, StatusCode::OK);
+    let res = app
+        .send(
+            Req::new(
+                axum::http::Method::DELETE,
+                "/admin/users/me@example.com/keys",
+            )
+            .admin(),
+        )
+        .await;
+    assert_eq!(res.json()["revoked"], 1);
+    assert_rejected(&app.send(exchange(&raw3)).await);
+}

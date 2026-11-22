@@ -56,7 +56,12 @@ pub fn router(state: AppState) -> Router {
             "/admin/users/{id}/grants/{slug}",
             put(admin::set_grant).delete(admin::remove_grant),
         )
-        .route("/admin/users/{id}/sessions", delete(admin::revoke_sessions));
+        .route("/admin/users/{id}/sessions", delete(admin::revoke_sessions))
+        .route(
+            "/admin/users/{id}/keys",
+            get(admin::list_keys).delete(admin::revoke_keys),
+        )
+        .route("/admin/users/{id}/keys/{key_id}", delete(admin::revoke_key));
     if state.config.allow_token_mint {
         admin_routes = admin_routes.route("/admin/tokens", post(admin::mint_token));
     }

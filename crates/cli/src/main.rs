@@ -55,6 +55,9 @@ enum Command {
     /// Manage login sessions.
     #[command(subcommand)]
     Session(SessionCmd),
+    /// Manage users' API keys (users create them on the /keys page).
+    #[command(subcommand)]
+    Key(KeyCmd),
     /// Mint access tokens for testing (server needs ALLOW_TOKEN_MINT=true).
     #[command(subcommand)]
     Token(TokenCmd),
@@ -145,6 +148,32 @@ enum GrantCmd {
 enum SessionCmd {
     /// Revoke all of a user's sessions (signs them out everywhere).
     Revoke { user: String },
+}
+
+#[derive(Subcommand)]
+enum KeyCmd {
+    /// List a user's API keys.
+    List {
+        user: String,
+        /// Only keys for this app.
+        #[arg(long)]
+        app: Option<String>,
+    },
+    /// Revoke one key by id, or all of a user's keys with --all.
+    Revoke {
+        user: String,
+        /// Key id, as shown by `key list`.
+        #[arg(required_unless_present = "all", conflicts_with = "all")]
+        key_id: Option<String>,
+        /// Revoke every key the user has (or every key for --app).
+        #[arg(long)]
+        all: bool,
+        /// With --all: only keys for this app.
+        #[arg(long, requires = "all")]
+        app: Option<String>,
+        #[command(flatten)]
+        confirm: Confirm,
+    },
 }
 
 #[derive(Subcommand)]
@@ -375,6 +404,43 @@ async fn run() -> Result<()> {
                 &format!("Revoked {} session(s) for {user}", res["revoked"]),
             )
         }
+        Command::Key(cmd) => match cmd {
+            KeyCmd::List { user, app } => {
+                let query: Vec<(&str, &str)> = app.iter().map(|a| ("app", a.as_str())).collect();
+                out.keys(
+                    &client
+                        .get_query(&["admin", "users", &user, "keys"], &query)
+                        .await?,
+                )
+            }
+            KeyCmd::Revoke {
+                user,
+                key_id: Some(id),
+                ..
+            } => {
+                let res = client
+                    .delete(&["admin", "users", &user, "keys", &id])
+                    .await?;
+                out.done(&res, &format!("Revoked key {id} for {user}"))
+            }
+            KeyCmd::Revoke {
+                user, app, confirm, ..
+            } => {
+                let scope = app
+                    .as_deref()
+                    .map(|a| format!(" for {a}"))
+                    .unwrap_or_default();
+                confirm.check(&format!("Revoke all API keys{scope} for {user}"))?;
+                let query: Vec<(&str, &str)> = app.iter().map(|a| ("app", a.as_str())).collect();
+                let res = client
+                    .delete_query(&["admin", "users", &user, "keys"], &query)
+                    .await?;
+                out.done(
+                    &res,
+                    &format!("Revoked {} key(s){scope} for {user}", res["revoked"]),
+                )
+            }
+        },
         Command::Token(TokenCmd::Mint { user, ttl }) => {
             let key = if user.contains('@') {
                 "email"

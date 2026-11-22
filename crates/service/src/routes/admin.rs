@@ -12,7 +12,7 @@ use axum::{
 use chrono::{DateTime, Utc};
 use clang_auth_core::{
     duration,
-    model::{App, InvitePurpose, User, UserStatus},
+    model::{ApiKey, App, InvitePurpose, User, UserStatus},
     origin::normalize_origin,
     secret::verify_sha256_hex,
 };
@@ -358,6 +358,75 @@ pub async fn revoke_sessions(
     let user = load_user(&state, &id).await?;
     let n = state.store.revoke_user_sessions(user.id).await?;
     tracing::info!(event = "sessions_revoked", user_id = %user.id, count = n);
+    Ok(Json(json!({ "user_id": user.id.to_hex(), "revoked": n })))
+}
+
+// ------------------------------------------------------------- api keys
+
+/// An API key as shown to admins and on `/keys`. Never includes the key or
+/// its hash.
+#[derive(Serialize)]
+pub struct ApiKeyView {
+    pub id: String,
+    pub app: String,
+    pub name: String,
+    pub roles: Vec<String>,
+    pub created_at: DateTime<Utc>,
+    pub last_used_at: Option<DateTime<Utc>>,
+    pub expires_at: Option<DateTime<Utc>>,
+}
+
+impl From<ApiKey> for ApiKeyView {
+    fn from(k: ApiKey) -> Self {
+        Self {
+            id: k.public_id,
+            app: k.app,
+            name: k.name,
+            roles: k.roles,
+            created_at: k.created_at,
+            last_used_at: k.last_used_at,
+            expires_at: k.expires_at,
+        }
+    }
+}
+
+/// `GET /admin/users/{id}/keys[?app=slug]`
+pub async fn list_keys(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Query(f): Query<UserFilter>,
+) -> ApiResult<Json<Vec<ApiKeyView>>> {
+    let user = load_user(&state, &id).await?;
+    let keys = state
+        .store
+        .list_api_keys(Some(user.id), f.app.as_deref())
+        .await?;
+    Ok(Json(keys.into_iter().map(Into::into).collect()))
+}
+
+/// `DELETE /admin/users/{id}/keys/{key_id}`
+pub async fn revoke_key(
+    State(state): State<AppState>,
+    Path((id, key_id)): Path<(String, String)>,
+) -> ApiResult<Json<Value>> {
+    let user = load_user(&state, &id).await?;
+    state.store.revoke_api_key(user.id, &key_id).await?;
+    tracing::info!(event = "api_key_revoked", user_id = %user.id, key_id = %key_id, by = "admin");
+    Ok(Json(json!({ "user_id": user.id.to_hex(), "revoked": 1 })))
+}
+
+/// `DELETE /admin/users/{id}/keys[?app=slug]`: revoke all (for one app).
+pub async fn revoke_keys(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Query(f): Query<UserFilter>,
+) -> ApiResult<Json<Value>> {
+    let user = load_user(&state, &id).await?;
+    let n = state
+        .store
+        .revoke_user_api_keys(user.id, f.app.as_deref())
+        .await?;
+    tracing::info!(event = "api_keys_revoked", user_id = %user.id, count = n, by = "admin");
     Ok(Json(json!({ "user_id": user.id.to_hex(), "revoked": n })))
 }
 
