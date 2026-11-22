@@ -191,7 +191,53 @@ aws ce create-anomaly-subscription --anomaly-subscription "{
   \"ThresholdExpression\":{\"Dimensions\":{\"Key\":\"ANOMALY_TOTAL_IMPACT_ABSOLUTE\",\"MatchOptions\":[\"GREATER_THAN_OR_EQUAL\"],\"Values\":[\"3\"]}}}"
 ```
 
-You're done. Integrate your apps using [integration-guide.md](integration-guide.md).
+You're done. Integrate your apps using [integration-guide.md](integration-guide.md). Optionally, set up deploys on merge next (2.8).
+
+### 2.8 Deploy on merge to `main` (GitHub Actions)
+
+After the first manual deploy, `.github/workflows/deploy.yml` can deploy every push to `main`, which means every merged PR. It runs the same checks as PR CI (`ci.yml`) first, then `sam build`, `sam deploy` and a check of `/health`, the JWKS and `/api/token` on the live domain. It never uses long-lived AWS keys: the job gets short-lived credentials through GitHub's OIDC provider.
+
+```text
+push to main → ci.yml (fmt, clippy, cargo test + MongoDB, example app, cfn-lint)
+             → deploy job (environment "production")
+                 assumes clang-auth-github-deploy  (OIDC; only this repo's production environment)
+                 sam deploy --role-arn clang-auth-cfn-exec  (CloudFormation changes the resources with this role)
+                 verify the live domain
+```
+
+The GitHub role can only upload artifacts and run change sets on the `clang-auth` stack. Changing Lambda, IAM, API Gateway and logs is left to CloudFormation through the execution role, so a leaked workflow token can't call those services directly.
+
+**1. Create the two roles** (once, with an admin profile). If the account already has the `token.actions.githubusercontent.com` OIDC provider, add `CreateOidcProvider=false`.
+
+```sh
+aws cloudformation deploy --region us-west-2 \
+  --template-file infra/github-deploy.yaml --stack-name clang-auth-github-deploy \
+  --capabilities CAPABILITY_NAMED_IAM \
+  --parameter-overrides GitHubRepo=<owner>/<repo>
+aws cloudformation describe-stacks --region us-west-2 --stack-name clang-auth-github-deploy \
+  --query 'Stacks[0].Outputs' --output table
+```
+
+**2. Create the `production` environment and its settings.** The repo is public, so its Actions logs are public too. The account ID and ARNs go in **secrets**, which GitHub masks in logs. `AWS_ACCOUNT_ID` is masked explicitly too, because `sam` prints change set ARNs.
+
+```sh
+gh api -X PUT repos/<owner>/<repo>/environments/production
+gh secret set AWS_DEPLOY_ROLE_ARN   --env production --body "<DeployRoleArn output>"
+gh secret set AWS_CFN_EXEC_ROLE_ARN --env production --body "<CloudFormationExecutionRoleArn output>"
+gh secret set AWS_ACCOUNT_ID        --env production --body "$(aws sts get-caller-identity --query Account --output text)"
+gh secret set CERTIFICATE_ARN       --env production --body "<the CertificateArn from samconfig.local.toml>"
+gh variable set AWS_REGION    --env production --body us-west-2
+gh variable set DOMAIN_NAME   --env production --body auth.example.com
+gh variable set COOKIE_DOMAIN --env production --body .example.com
+# Only when DNS is in Route 53:
+# gh variable set HOSTED_ZONE_ID --env production --body Z0123456789ABC
+```
+
+To require your approval before each deploy, add yourself as a required reviewer under Settings → Environments → production.
+
+**3. Run it once by hand** (Actions → Deploy → Run workflow, or `gh workflow run deploy.yml`) and watch it finish. After that, merging to `main` deploys.
+
+**Rolling back:** revert the bad commit on `main` (`git revert`, then merge), and the workflow deploys the previous code. For an outage while you work on the fix, use the kill switch (section 3). Manual `sam deploy --config-file samconfig.local.toml` still works. Once a deploy has used the execution role, CloudFormation keeps using it for the stack, so your manual deploys use it too.
 
 ## 3. Cost guardrails and the kill switch
 
